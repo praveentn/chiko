@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#667eea" />
+    <meta name="description" content="QueryForge - Zero-Code AI Workbench for Enterprise" />
+    <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
+    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+    
+    <!-- Preload critical fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    
+    <!-- Meta tags for better SEO and social sharing -->
+    <meta property="og:title" content="QueryForge - Zero-Code AI Workbench" />
+    <meta property="og:description" content="Enterprise-grade AI workbench for building and deploying intelligent agents without code" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="%PUBLIC_URL%/og-image.png" />
+    
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="QueryForge - Zero-Code AI Workbench" />
+    <meta name="twitter:description" content="Enterprise-grade AI workbench for building and deploying intelligent agents without code" />
+    <meta name="twitter:image" content="%PUBLIC_URL%/twitter-image.png" />
+    
+    <!-- Favicon variations -->
+    <link rel="icon" type="image/x-icon" href="%PUBLIC_URL%/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="%PUBLIC_URL%/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="%PUBLIC_URL%/favicon-16x16.png" />
+    
+    <title>QueryForge - Zero-Code AI Workbench</title>
+    
+    <!-- Inline critical CSS for better performance -->
+    <style>
+      /* Critical CSS for loading state */
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+          'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        background: #f5f7fa;
+        color: #2c3e50;
+      }
+      
+      #root {
+        height: 100vh;
+        width: 100vw;
+      }
+      
+      /* Loading spinner */
+      .initial-loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        font-family: inherit;
+      }
+      
+      .loading-spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid rgba(255, 255, 255, 0.3);
+        border-top: 3px solid white;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-bottom: 1rem;
+      }
+      
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      
+      .loading-text {
+        font-size: 1.125rem;
+        font-weight: 500;
+        margin: 0;
+      }
+      
+      .loading-subtitle {
+        font-size: 0.875rem;
+        opacity: 0.8;
+        margin: 0.5rem 0 0 0;
+      }
+      
+      /* Hide loading when React loads */
+      .app-loaded .initial-loading {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <noscript>
+      <div style="
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        background: #f5f7fa;
+        color: #2c3e50;
+        text-align: center;
+        padding: 2rem;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      ">
+        <h1 style="color: #e74c3c; margin-bottom: 1rem;">JavaScript Required</h1>
+        <p style="font-size: 1.125rem; margin-bottom: 1rem;">
+          QueryForge requires JavaScript to function properly.
+        </p>
+        <p style="color: #6c757d;">
+          Please enable JavaScript in your browser settings and reload the page.
+        </p>
+      </div>
+    </noscript>
+    
+    <!-- Loading state shown while React loads -->
+    <div id="initial-loading" class="initial-loading">
+      <div class="loading-spinner"></div>
+      <p class="loading-text">Loading QueryForge...</p>
+      <p class="loading-subtitle">Initializing AI Workbench</p>
+    </div>
+    
+    <!-- React app will mount here -->
+    <div id="root"></div>
+    
+    <!-- Performance monitoring script -->
+    <script>
+      // Hide loading spinner when React app loads
+      window.addEventListener('DOMContentLoaded', function() {
+        // Set a timeout to hide loading if React takes too long
+        setTimeout(function() {
+          const loading = document.getElementById('initial-loading');
+          if (loading && !document.body.classList.contains('app-loaded')) {
+            loading.innerHTML = `
+              <div style="text-align: center; color: white;">
+                <h2 style="color: #f39c12; margin-bottom: 1rem;">⚠️ Loading Issue</h2>
+                <p>The application is taking longer than expected to load.</p>
+                <p>Please check your internet connection and try refreshing the page.</p>
+                <button onclick="window.location.reload()" style="
+                  background: white;
+                  color: #667eea;
+                  border: none;
+                  padding: 0.75rem 1.5rem;
+                  border-radius: 6px;
+                  font-weight: 600;
+                  cursor: pointer;
+                  margin-top: 1rem;
+                ">Reload Page</button>
+              </div>
+            `;
+          }
+        }, 10000); // 10 seconds timeout
+      });
+      
+      // Performance monitoring
+      window.addEventListener('load', function() {
+        // Log performance metrics for debugging
+        if (window.performance && window.performance.timing) {
+          const timing = window.performance.timing;
+          const loadTime = timing.loadEventEnd - timing.navigationStart;
+          console.log('Page load time:', loadTime + 'ms');
+        }
+      });
+      
+      // Error handling for unhandled errors
+      window.addEventListener('error', function(event) {
+        console.error('Application error:', event.error);
+        
+        // Show error message if React fails to load
+        const loading = document.getElementById('initial-loading');
+        if (loading && !document.body.classList.contains('app-loaded')) {
+          loading.innerHTML = `
+            <div style="text-align: center; color: white;">
+              <h2 style="color: #e74c3c; margin-bottom: 1rem;">❌ Loading Error</h2>
+              <p>An error occurred while loading the application.</p>
+              <p style="font-size: 0.875rem; opacity: 0.8;">Check the browser console for more details.</p>
+              <button onclick="window.location.reload()" style="
+                background: white;
+                color: #667eea;
+                border: none;
+                padding: 0.75rem 1.5rem;
+                border-radius: 6px;
+                font-weight: 600;
+                cursor: pointer;
+                margin-top: 1rem;
+              ">Reload Page</button>
+            </div>
+          `;
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -3,6 +3,30 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# claude
+claude/
+
+# node modules
+node_modules/
+
+# react native gitignore
+# list
+*node_modules/
+*package-lock.json
+*pnpm-lock.yaml
+*yarn.lock
+*tsconfig.json
+*tsconfig.build.json
+*metro.config.js
+*babel.config.js
+*app.json
+*app.config.js
+*expo/
+
+
+
+
+
 # C extensions
 *.so
 
