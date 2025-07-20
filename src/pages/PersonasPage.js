@@ -1,5 +1,5 @@
 // src/pages/PersonasPage.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Plus,
   Search,
@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 
 import LoadingSpinner from '../components/LoadingSpinner';
+import PersonaModal from '../components/PersonaModal';
 import { PermissionGate } from '../components/ProtectedRoute';
 import authService from '../services/authService';
 import './PersonasPage.css';
@@ -41,16 +42,14 @@ const PersonasPage = ({ user }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pagination, setPagination] = useState(null);
 
-  useEffect(() => {
-    loadPersonas();
-  }, [currentPage, searchTerm, visibilityFilter, statusFilter]);
-
-  const loadPersonas = async () => {
+  const loadPersonas = useCallback(async () => {
     setIsLoading(true);
+    setError(null);
+    
     try {
       const params = new URLSearchParams({
-        page: currentPage,
-        per_page: 20,
+        page: currentPage.toString(),
+        per_page: '20',
         ...(searchTerm && { search: searchTerm }),
         ...(visibilityFilter && { visibility: visibilityFilter }),
         ...(statusFilter && { status: statusFilter })
@@ -62,17 +61,24 @@ const PersonasPage = ({ user }) => {
         setPersonas(data.personas || []);
         setPagination(data.pagination);
       } else {
-        throw new Error('Failed to load personas');
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to load personas');
       }
     } catch (error) {
       console.error('Failed to load personas:', error);
-      setError('Failed to load personas');
+      setError(error.message || 'Failed to load personas');
+      setPersonas([]);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [currentPage, searchTerm, visibilityFilter, statusFilter]);
+
+  useEffect(() => {
+    loadPersonas();
+  }, [loadPersonas]);
 
   const handleCreatePersona = () => {
+    setSelectedPersona(null);
     setShowCreateModal(true);
   };
 
@@ -82,27 +88,46 @@ const PersonasPage = ({ user }) => {
   };
 
   const handleDeletePersona = async (personaId) => {
-    if (window.confirm('Are you sure you want to delete this persona?')) {
-      try {
-        const response = await authService.apiCall(`/personas/${personaId}`, {
-          method: 'DELETE'
-        });
-        
-        if (response?.ok) {
-          setPersonas(personas.filter(persona => persona.id !== personaId));
-        } else {
-          throw new Error('Failed to delete persona');
-        }
-      } catch (error) {
-        console.error('Delete persona error:', error);
-        setError('Failed to delete persona');
+    if (!window.confirm('Are you sure you want to delete this persona?')) {
+      return;
+    }
+
+    try {
+      const response = await authService.apiCall(`/personas/${personaId}`, {
+        method: 'DELETE'
+      });
+
+      if (response?.ok) {
+        await loadPersonas(); // Reload the list
+      } else {
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to delete persona');
       }
+    } catch (error) {
+      console.error('Delete persona error:', error);
+      setError(error.message || 'Failed to delete persona');
     }
   };
 
-  const handleTestPersona = (persona) => {
-    setSelectedPersona(persona);
-    setShowTestModal(true);
+  const handleToggleStatus = async (personaId, currentStatus) => {
+    try {
+      const response = await authService.apiCall(`/personas/${personaId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          is_active: !currentStatus
+        })
+      });
+
+      if (response?.ok) {
+        await loadPersonas(); // Reload the list
+      } else {
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to update persona status');
+      }
+    } catch (error) {
+      console.error('Toggle status error:', error);
+      setError(error.message || 'Failed to update persona status');
+    }
   };
 
   const handleDuplicatePersona = async (persona) => {
@@ -110,37 +135,16 @@ const PersonasPage = ({ user }) => {
       const response = await authService.apiCall(`/personas/${persona.id}/duplicate`, {
         method: 'POST'
       });
-      
+
       if (response?.ok) {
-        const data = await response.json();
-        setPersonas([data.persona, ...personas]);
+        await loadPersonas(); // Reload the list
       } else {
-        throw new Error('Failed to duplicate persona');
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to duplicate persona');
       }
     } catch (error) {
       console.error('Duplicate persona error:', error);
-      setError('Failed to duplicate persona');
-    }
-  };
-
-  const handleApprovePersona = async (personaId) => {
-    try {
-      const response = await authService.apiCall(`/personas/${personaId}/approve`, {
-        method: 'PUT'
-      });
-      
-      if (response?.ok) {
-        setPersonas(personas.map(persona => 
-          persona.id === personaId 
-            ? { ...persona, is_approved: true }
-            : persona
-        ));
-      } else {
-        throw new Error('Failed to approve persona');
-      }
-    } catch (error) {
-      console.error('Approve persona error:', error);
-      setError('Failed to approve persona');
+      setError(error.message || 'Failed to duplicate persona');
     }
   };
 
@@ -149,282 +153,343 @@ const PersonasPage = ({ user }) => {
     setShowDetailsModal(true);
   };
 
-  if (isLoading) {
-    return (
-      <div className="page-loading">
-        <LoadingSpinner size="large" />
-        <p>Loading personas...</p>
-      </div>
-    );
-  }
+  const handlePageChange = (page) => {
+    setCurrentPage(page);
+  };
+
+  const handleSearchChange = (e) => {
+    setSearchTerm(e.target.value);
+    setCurrentPage(1);
+  };
+
+  const handleVisibilityFilterChange = (e) => {
+    setVisibilityFilter(e.target.value);
+    setCurrentPage(1);
+  };
+
+  const handleStatusFilterChange = (e) => {
+    setStatusFilter(e.target.value);
+    setCurrentPage(1);
+  };
+
+  const getVisibilityIcon = (visibility, isApproved) => {
+    if (visibility === 'public' && isApproved) {
+      return <Globe className="w-4 h-4 text-blue-500" title="Public" />;
+    } else if (visibility === 'team' && isApproved) {
+      return <Team className="w-4 h-4 text-green-500" title="Team" />;
+    } else {
+      return <Lock className="w-4 h-4 text-gray-500" title="Private" />;
+    }
+  };
+
+  const getStatusIcon = (isActive, isApproved) => {
+    if (isActive && isApproved) {
+      return <CheckCircle className="w-4 h-4 text-green-500" />;
+    } else if (!isActive) {
+      return <XCircle className="w-4 h-4 text-red-500" />;
+    } else {
+      return <AlertCircle className="w-4 h-4 text-yellow-500" />;
+    }
+  };
+
+  const onModalSuccess = () => {
+    loadPersonas();
+  };
 
   return (
     <div className="personas-page">
       <div className="page-header">
         <div className="header-content">
           <div className="header-text">
-            <h1 className="page-title">
-              <Users className="page-icon" />
-              Personas
+            <h1>
+              <Users className="w-6 h-6" />
+              AI Personas
             </h1>
-            <p className="page-subtitle">
-              Create and manage AI personas with custom behaviors and personalities
-            </p>
+            <p>Define AI personalities and behaviors for your agents</p>
           </div>
-          <PermissionGate 
-            userRole={user?.role} 
-            requiredRoles={['Admin', 'Developer', 'Business User']}
-          >
-            <button 
-              className="btn btn-primary"
+          <PermissionGate resource="persona" action="create" userRole={user?.role}>
+            <button
               onClick={handleCreatePersona}
+              className="btn btn-primary"
+              disabled={isLoading}
             >
-              <Plus size={20} />
+              <Plus className="w-4 h-4" />
               Create Persona
             </button>
           </PermissionGate>
         </div>
       </div>
 
-      <div className="page-content">
-        {/* Filters */}
-        <div className="filters-section">
-          <div className="search-box">
-            <Search className="search-icon" />
-            <input
-              type="text"
-              placeholder="Search personas..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="search-input"
-            />
-          </div>
+      {error && (
+        <div className="error-banner">
+          <AlertCircle className="w-4 h-4" />
+          <span>{error}</span>
+          <button onClick={() => setError(null)}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
-          <div className="filter-controls">
-            <select
-              value={visibilityFilter}
-              onChange={(e) => setVisibilityFilter(e.target.value)}
-              className="filter-select"
-            >
-              <option value="">All Visibility</option>
-              <option value="public">Public</option>
-              <option value="team">Team</option>
-              <option value="private">Private</option>
-            </select>
-
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="filter-select"
-            >
-              <option value="">All Status</option>
-              <option value="approved">Approved</option>
-              <option value="pending">Pending</option>
-            </select>
-          </div>
+      <div className="filters-section">
+        <div className="search-box">
+          <Search className="w-4 h-4" />
+          <input
+            type="text"
+            placeholder="Search personas..."
+            value={searchTerm}
+            onChange={handleSearchChange}
+            disabled={isLoading}
+          />
         </div>
 
-        {/* Error Display */}
-        {error && (
-          <div className="error-message">
-            <AlertCircle size={20} />
-            <span>{error}</span>
-            <button 
-              onClick={() => setError(null)}
-              className="error-close"
-            >
-              <X size={16} />
-            </button>
-          </div>
-        )}
+        <div className="filter-controls">
+          <select
+            value={visibilityFilter}
+            onChange={handleVisibilityFilterChange}
+            className="filter-select"
+            disabled={isLoading}
+          >
+            <option value="">All Visibility</option>
+            <option value="private">Private</option>
+            <option value="team">Team</option>
+            <option value="public">Public</option>
+          </select>
 
-        {/* Personas Grid */}
-        <div className="personas-grid">
-          {personas.length > 0 ? (
-            personas.map((persona) => (
-              <PersonaCard
-                key={persona.id}
-                persona={persona}
-                user={user}
-                onEdit={handleEditPersona}
-                onDelete={handleDeletePersona}
-                onTest={handleTestPersona}
-                onDuplicate={handleDuplicatePersona}
-                onApprove={handleApprovePersona}
-                onViewDetails={handleViewDetails}
-              />
-            ))
-          ) : (
-            <div className="empty-state">
-              <Users size={64} />
-              <h3>No personas found</h3>
-              <p>Create your first AI persona to get started</p>
-              <button 
-                className="btn btn-primary"
-                onClick={handleCreatePersona}
-              >
-                <Plus size={20} />
-                Create Persona
+          <select
+            value={statusFilter}
+            onChange={handleStatusFilterChange}
+            className="filter-select"
+            disabled={isLoading}
+          >
+            <option value="">All Status</option>
+            <option value="approved">Approved</option>
+            <option value="pending">Pending</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="content-area">
+        {isLoading ? (
+          <div className="loading-container">
+            <LoadingSpinner size="large" />
+            <p>Loading personas...</p>
+          </div>
+        ) : personas.length === 0 ? (
+          <div className="empty-state">
+            <Users className="w-12 h-12 text-gray-400" />
+            <h3>No personas found</h3>
+            <p>
+              {searchTerm || visibilityFilter || statusFilter
+                ? 'Try adjusting your search or filters'
+                : 'Get started by creating your first AI persona'
+              }
+            </p>
+            {!searchTerm && !visibilityFilter && !statusFilter && (
+              <PermissionGate resource="persona" action="create" userRole={user?.role}>
+                <button onClick={handleCreatePersona} className="btn btn-primary">
+                  <Plus className="w-4 h-4" />
+                  Create Your First Persona
+                </button>
+              </PermissionGate>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="personas-grid">
+              {personas.map((persona) => (
+                <div key={persona.id} className="persona-card">
+                  <div className="card-header">
+                    <div className="card-title">
+                      <h3>{persona.name}</h3>
+                      <div className="card-badges">
+                        {getVisibilityIcon(persona.visibility, persona.is_approved)}
+                        {getStatusIcon(persona.is_active, persona.is_approved)}
+                      </div>
+                    </div>
+                    <p className="card-description">{persona.description}</p>
+                  </div>
+
+                  <div className="card-content">
+                    <div className="card-stats">
+                      <div className="stat-item">
+                        <span className="stat-label">Visibility</span>
+                        <span className="stat-value">{persona.visibility}</span>
+                      </div>
+                      <div className="stat-item">
+                        <span className="stat-label">Status</span>
+                        <span className={`stat-value ${persona.is_active ? 'text-green-600' : 'text-red-600'}`}>
+                          {persona.is_active ? 'Active' : 'Inactive'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {persona.tags && persona.tags.length > 0 && (
+                      <div className="card-tags">
+                        {persona.tags.slice(0, 3).map((tag, index) => (
+                          <span key={index} className="tag">{tag}</span>
+                        ))}
+                        {persona.tags.length > 3 && (
+                          <span className="tag-more">+{persona.tags.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="card-footer">
+                    <div className="card-meta">
+                      <span>By {persona.created_by}</span>
+                      <span>{new Date(persona.created_at).toLocaleDateString()}</span>
+                    </div>
+
+                    <div className="card-actions">
+                      <button
+                        onClick={() => handleViewDetails(persona)}
+                        className="btn btn-secondary btn-sm"
+                        title="View Details"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+
+                      <PermissionGate resource="persona" action="update" userRole={user?.role}>
+                        <button
+                          onClick={() => handleEditPersona(persona)}
+                          className="btn btn-secondary btn-sm"
+                          title="Edit Persona"
+                        >
+                          <Edit className="w-4 h-4" />
+                        </button>
+                      </PermissionGate>
+
+                      <PermissionGate resource="persona" action="create" userRole={user?.role}>
+                        <button
+                          onClick={() => handleDuplicatePersona(persona)}
+                          className="btn btn-secondary btn-sm"
+                          title="Duplicate Persona"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </button>
+                      </PermissionGate>
+
+                      <PermissionGate resource="persona" action="update" userRole={user?.role}>
+                        <button
+                          onClick={() => handleToggleStatus(persona.id, persona.is_active)}
+                          className={`btn btn-sm ${persona.is_active ? 'btn-warning' : 'btn-success'}`}
+                          title={persona.is_active ? 'Deactivate' : 'Activate'}
+                        >
+                          {persona.is_active ? <XCircle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
+                        </button>
+                      </PermissionGate>
+
+                      <PermissionGate resource="persona" action="delete" userRole={user?.role}>
+                        <button
+                          onClick={() => handleDeletePersona(persona.id)}
+                          className="btn btn-danger btn-sm"
+                          title="Delete Persona"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </PermissionGate>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {pagination && pagination.pages > 1 && (
+              <div className="pagination">
+                <button
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage === 1}
+                  className="pagination-btn"
+                >
+                  Previous
+                </button>
+                
+                <div className="pagination-info">
+                  Page {currentPage} of {pagination.pages}
+                </div>
+                
+                <button
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage === pagination.pages}
+                  className="pagination-btn"
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Create/Edit Modal */}
+      <PersonaModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        persona={selectedPersona}
+        onSuccess={onModalSuccess}
+        user={user}
+      />
+
+      {/* Details Modal */}
+      {showDetailsModal && selectedPersona && (
+        <div className="modal-backdrop" onClick={() => setShowDetailsModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Persona Details</h2>
+              <button onClick={() => setShowDetailsModal(false)}>
+                <X className="w-5 h-5" />
               </button>
             </div>
-          )}
-        </div>
+            <div className="modal-body">
+              <div className="details-section">
+                <h3>Basic Information</h3>
+                <div className="details-grid">
+                  <div className="detail-item">
+                    <label>Name</label>
+                    <span>{selectedPersona.name}</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Description</label>
+                    <span>{selectedPersona.description || 'No description'}</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Visibility</label>
+                    <span>{selectedPersona.visibility}</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Status</label>
+                    <span>{selectedPersona.is_active ? 'Active' : 'Inactive'}</span>
+                  </div>
+                </div>
+              </div>
 
-        {/* Pagination */}
-        {pagination && pagination.total_pages > 1 && (
-          <div className="pagination">
-            <button
-              onClick={() => setCurrentPage(currentPage - 1)}
-              disabled={!pagination.has_prev}
-              className="pagination-btn"
-            >
-              Previous
-            </button>
-            <span className="pagination-info">
-              Page {currentPage} of {pagination.total_pages}
-            </span>
-            <button
-              onClick={() => setCurrentPage(currentPage + 1)}
-              disabled={!pagination.has_next}
-              className="pagination-btn"
-            >
-              Next
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
+              <div className="details-section">
+                <h3>System Prompt</h3>
+                <pre className="code-block">{selectedPersona.system_prompt}</pre>
+              </div>
 
-// Persona Card Component
-const PersonaCard = ({ persona, user, onEdit, onDelete, onTest, onDuplicate, onApprove, onViewDetails }) => {
-  const canEdit = user?.role === 'Admin' || persona.created_by === user?.id;
-
-  const getVisibilityIcon = (visibility) => {
-    switch (visibility) {
-      case 'public':
-        return <Globe size={16} className="visibility-icon public" />;
-      case 'team':
-        return <Team size={16} className="visibility-icon team" />;
-      case 'private':
-        return <Lock size={16} className="visibility-icon private" />;
-      default:
-        return <Lock size={16} className="visibility-icon private" />;
-    }
-  };
-
-  return (
-    <div className="persona-card">
-      <div className="persona-card-header">
-        <div className="persona-info">
-          <div className="persona-meta">
-            {getVisibilityIcon(persona.visibility)}
-            <span className="visibility-text">{persona.visibility}</span>
-            {persona.is_approved ? (
-              <CheckCircle size={16} className="status-icon approved" />
-            ) : (
-              <XCircle size={16} className="status-icon pending" />
-            )}
-          </div>
-          <h3 className="persona-name">{persona.name}</h3>
-          <p className="persona-description">
-            {persona.description || 'No description provided'}
-          </p>
-        </div>
-      </div>
-
-      <div className="persona-card-body">
-        <div className="persona-prompt-preview">
-          <div className="prompt-label">System Prompt:</div>
-          <div className="prompt-text">
-            {persona.system_prompt && persona.system_prompt.length > 120 
-              ? `${persona.system_prompt.substring(0, 120)}...`
-              : persona.system_prompt || 'No system prompt defined'
-            }
-          </div>
-        </div>
-
-        {persona.tags && persona.tags.length > 0 && (
-          <div className="persona-tags">
-            {persona.tags.slice(0, 3).map((tag, index) => (
-              <span key={index} className="tag">
-                {tag}
-              </span>
-            ))}
-            {persona.tags.length > 3 && (
-              <span className="tag-more">+{persona.tags.length - 3}</span>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="persona-card-footer">
-        <div className="persona-meta">
-          <span className="created-by">
-            Created by {persona.created_by_name || 'Unknown'}
-          </span>
-          <span className="created-date">
-            {new Date(persona.created_at).toLocaleDateString()}
-          </span>
-        </div>
-
-        <div className="persona-actions">
-          <button
-            onClick={() => onViewDetails(persona)}
-            className="action-btn secondary"
-            title="View Details"
-          >
-            <Eye size={16} />
-          </button>
-          
-          <button
-            onClick={() => onTest(persona)}
-            className="action-btn primary"
-            title="Test Persona"
-          >
-            <TestTube size={16} />
-          </button>
-
-          {canEdit && (
-            <>
-              <button
-                onClick={() => onEdit(persona)}
-                className="action-btn secondary"
-                title="Edit Persona"
-              >
-                <Edit size={16} />
-              </button>
-              
-              <button
-                onClick={() => onDuplicate(persona)}
-                className="action-btn secondary"
-                title="Duplicate Persona"
-              >
-                <Copy size={16} />
-              </button>
-              
-              {user?.role === 'Admin' && !persona.is_approved && (
-                <button
-                  onClick={() => onApprove(persona.id)}
-                  className="action-btn success"
-                  title="Approve Persona"
-                >
-                  <Check size={16} />
-                </button>
+              {selectedPersona.user_prompt_template && (
+                <div className="details-section">
+                  <h3>User Prompt Template</h3>
+                  <pre className="code-block">{selectedPersona.user_prompt_template}</pre>
+                </div>
               )}
-              
-              <button
-                onClick={() => onDelete(persona.id)}
-                className="action-btn danger"
-                title="Delete Persona"
-              >
-                <Trash2 size={16} />
-              </button>
-            </>
-          )}
+
+              {selectedPersona.tags && selectedPersona.tags.length > 0 && (
+                <div className="details-section">
+                  <h3>Tags</h3>
+                  <div className="tags-list">
+                    {selectedPersona.tags.map((tag, index) => (
+                      <span key={index} className="tag">{tag}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

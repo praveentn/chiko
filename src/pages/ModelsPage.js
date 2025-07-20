@@ -1,26 +1,27 @@
 // src/pages/ModelsPage.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Plus,
   Search,
-  Filter,
   Brain,
-  Settings,
-  TestTube,
-  Check,
-  X,
-  AlertCircle,
-  DollarSign,
-  Zap,
-  Clock,
   Edit,
   Trash2,
   Eye,
+  TestTube,
+  Copy,
+  Globe,
+  Lock,
+  Users as Team,
+  AlertCircle,
   CheckCircle,
-  XCircle
+  XCircle,
+  Zap,
+  DollarSign,
+  X
 } from 'lucide-react';
 
 import LoadingSpinner from '../components/LoadingSpinner';
+import ModelModal from '../components/ModelModal';
 import { PermissionGate } from '../components/ProtectedRoute';
 import authService from '../services/authService';
 import './ModelsPage.css';
@@ -35,43 +36,48 @@ const ModelsPage = ({ user }) => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedModel, setSelectedModel] = useState(null);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [showTestModal, setShowTestModal] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [pagination, setPagination] = useState(null);
-  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
-  const [modelToDelete, setModelToDelete] = useState(null);
 
-  useEffect(() => {
-    loadModels();
-  }, [currentPage, searchTerm, providerFilter, statusFilter]);
-
-  const loadModels = async () => {
+  const loadModels = useCallback(async () => {
     setIsLoading(true);
+    setError(null);
+    
     try {
       const params = new URLSearchParams({
-        page: currentPage,
-        per_page: 20,
+        page: currentPage.toString(),
+        per_page: '20',
         ...(searchTerm && { search: searchTerm }),
         ...(providerFilter && { provider: providerFilter }),
         ...(statusFilter && { status: statusFilter })
       });
 
       const response = await authService.apiCall(`/models?${params}`);
-      if (response?.ok) {
+      
+      if (response && response.ok) {
         const data = await response.json();
         setModels(data.models || []);
-        setPagination(data.pagination);
+        setPagination(data.pagination || null);
       } else {
-        throw new Error('Failed to load models');
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to load models');
       }
     } catch (error) {
       console.error('Failed to load models:', error);
-      setError('Failed to load models');
+      setError(error.message || 'Failed to load models');
+      setModels([]);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [currentPage, searchTerm, providerFilter, statusFilter]);
+
+  useEffect(() => {
+    loadModels();
+  }, [loadModels]);
 
   const handleCreateModel = () => {
+    setSelectedModel(null);
     setShowCreateModal(true);
   };
 
@@ -80,75 +86,70 @@ const ModelsPage = ({ user }) => {
     setShowCreateModal(true);
   };
 
-  const handleDeleteModel = (model) => {
-    setModelToDelete(model);
-    setShowConfirmDialog(true);
-  };
+  const handleDeleteModel = async (modelId) => {
+    if (!window.confirm('Are you sure you want to delete this model?')) {
+      return;
+    }
 
-  const confirmDeleteModel = async () => {
-    if (modelToDelete) {
-      try {
-        const response = await authService.apiCall(`/models/${modelToDelete.id}`, {
-          method: 'DELETE'
-        });
-        
-        if (response?.ok) {
-          setModels(models.filter(model => model.id !== modelToDelete.id));
-        } else {
-          throw new Error('Failed to delete model');
-        }
-      } catch (error) {
-        console.error('Delete model error:', error);
-        setError('Failed to delete model');
-      } finally {
-        setShowConfirmDialog(false);
-        setModelToDelete(null);
+    try {
+      const response = await authService.apiCall(`/models/${modelId}`, {
+        method: 'DELETE'
+      });
+
+      if (response?.ok) {
+        await loadModels(); // Reload the list
+      } else {
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to delete model');
       }
+    } catch (error) {
+      console.error('Delete model error:', error);
+      setError(error.message || 'Failed to delete model');
     }
   };
 
-  const cancelDelete = () => {
-    setShowConfirmDialog(false);
-    setModelToDelete(null);
+  const handleToggleStatus = async (modelId, currentStatus) => {
+    try {
+      const response = await authService.apiCall(`/models/${modelId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          is_active: !currentStatus
+        })
+      });
+
+      if (response?.ok) {
+        await loadModels(); // Reload the list
+      } else {
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to update model status');
+      }
+    } catch (error) {
+      console.error('Toggle status error:', error);
+      setError(error.message || 'Failed to update model status');
+    }
   };
 
-  const handleTestModel = async (model) => {
+  const handleDuplicateModel = async (model) => {
     try {
-      const response = await authService.apiCall(`/models/${model.id}/test`, {
+      const response = await authService.apiCall(`/models/${model.id}/duplicate`, {
         method: 'POST'
       });
-      
+
       if (response?.ok) {
-        const data = await response.json();
-        alert(`Model test ${data.success ? 'passed' : 'failed'}: ${data.message}`);
+        await loadModels(); // Reload the list
       } else {
-        throw new Error('Failed to test model');
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to duplicate model');
       }
     } catch (error) {
-      console.error('Test model error:', error);
-      setError('Failed to test model');
+      console.error('Duplicate model error:', error);
+      setError(error.message || 'Failed to duplicate model');
     }
   };
 
-  const handleToggleModelStatus = async (modelId, currentStatus) => {
-    try {
-      const response = await authService.apiCall(`/models/${modelId}/toggle`, {
-        method: 'PUT'
-      });
-      
-      if (response?.ok) {
-        setModels(models.map(model => 
-          model.id === modelId 
-            ? { ...model, is_active: !currentStatus }
-            : model
-        ));
-      } else {
-        throw new Error('Failed to toggle model status');
-      }
-    } catch (error) {
-      console.error('Toggle model status error:', error);
-      setError('Failed to toggle model status');
-    }
+  const handleTestModel = (model) => {
+    setSelectedModel(model);
+    setShowTestModal(true);
   };
 
   const handleViewDetails = (model) => {
@@ -156,296 +157,454 @@ const ModelsPage = ({ user }) => {
     setShowDetailsModal(true);
   };
 
-  if (isLoading) {
-    return (
-      <div className="page-loading">
-        <LoadingSpinner size="large" />
-        <p>Loading models...</p>
-      </div>
-    );
-  }
+  const handlePageChange = (page) => {
+    setCurrentPage(page);
+  };
+
+  const handleSearchChange = (e) => {
+    setSearchTerm(e.target.value);
+    setCurrentPage(1);
+  };
+
+  const handleProviderFilterChange = (e) => {
+    setProviderFilter(e.target.value);
+    setCurrentPage(1);
+  };
+
+  const handleStatusFilterChange = (e) => {
+    setStatusFilter(e.target.value);
+    setCurrentPage(1);
+  };
+
+  const getProviderIcon = (provider) => {
+    switch (provider) {
+      case 'azure_openai':
+      case 'openai':
+        return <Brain className="w-4 h-4 text-green-500" />;
+      case 'anthropic':
+        return <Brain className="w-4 h-4 text-purple-500" />;
+      case 'google':
+        return <Brain className="w-4 h-4 text-blue-500" />;
+      default:
+        return <Brain className="w-4 h-4 text-gray-500" />;
+    }
+  };
+
+  const getStatusIcon = (isActive, isApproved) => {
+    if (isActive && isApproved) {
+      return <CheckCircle className="w-4 h-4 text-green-500" />;
+    } else if (!isActive) {
+      return <XCircle className="w-4 h-4 text-red-500" />;
+    } else {
+      return <AlertCircle className="w-4 h-4 text-yellow-500" />;
+    }
+  };
+
+  const formatCost = (cost) => {
+    if (cost === null || cost === undefined) return 'N/A';
+    return `$${(cost * 1000000).toFixed(4)}/1M tokens`;
+  };
+
+  const onModalSuccess = () => {
+    loadModels();
+  };
 
   return (
     <div className="models-page">
-      {/* Confirmation Dialog */}
-      {showConfirmDialog && (
-        <div className="modal-overlay">
-          <div className="confirm-dialog">
-            <h3>Confirm Delete</h3>
-            <p>Are you sure you want to delete the model "{modelToDelete?.name}"?</p>
-            <div className="dialog-actions">
-              <button onClick={cancelDelete} className="btn btn-secondary">
-                Cancel
-              </button>
-              <button onClick={confirmDeleteModel} className="btn btn-danger">
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="page-header">
         <div className="header-content">
           <div className="header-text">
-            <h1 className="page-title">
-              <Brain className="page-icon" />
-              Models
+            <h1>
+              <Brain className="w-6 h-6" />
+              AI Models
             </h1>
-            <p className="page-subtitle">
-              Manage AI models and their configurations
-            </p>
+            <p>Manage AI models and their configurations</p>
           </div>
-          <PermissionGate 
-            userRole={user?.role} 
-            requiredRoles={['Admin']}
-          >
-            <button 
-              className="btn btn-primary"
+          <PermissionGate resource="model" action="create" userRole={user?.role}>
+            <button
               onClick={handleCreateModel}
+              className="btn btn-primary"
+              disabled={isLoading}
             >
-              <Plus size={20} />
+              <Plus className="w-4 h-4" />
               Add Model
             </button>
           </PermissionGate>
         </div>
       </div>
 
-      <div className="page-content">
-        {/* Filters */}
-        <div className="filters-section">
-          <div className="search-box">
-            <Search className="search-icon" />
-            <input
-              type="text"
-              placeholder="Search models..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="search-input"
-            />
-          </div>
+      {error && (
+        <div className="error-banner">
+          <AlertCircle className="w-4 h-4" />
+          <span>{error}</span>
+          <button onClick={() => setError(null)}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
-          <div className="filter-controls">
-            <select
-              value={providerFilter}
-              onChange={(e) => setProviderFilter(e.target.value)}
-              className="filter-select"
-            >
-              <option value="">All Providers</option>
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="azure">Azure OpenAI</option>
-              <option value="huggingface">Hugging Face</option>
-            </select>
-
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="filter-select"
-            >
-              <option value="">All Status</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-          </div>
+      <div className="filters-section">
+        <div className="search-box">
+          <Search className="w-4 h-4" />
+          <input
+            type="text"
+            placeholder="Search models..."
+            value={searchTerm}
+            onChange={handleSearchChange}
+            disabled={isLoading}
+          />
         </div>
 
-        {/* Error Display */}
-        {error && (
-          <div className="error-message">
-            <AlertCircle size={20} />
-            <span>{error}</span>
-            <button 
-              onClick={() => setError(null)}
-              className="error-close"
-            >
-              <X size={16} />
-            </button>
-          </div>
-        )}
+        <div className="filter-controls">
+          <select
+            value={providerFilter}
+            onChange={handleProviderFilterChange}
+            className="filter-select"
+            disabled={isLoading}
+          >
+            <option value="">All Providers</option>
+            <option value="azure_openai">Azure OpenAI</option>
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="google">Google</option>
+            <option value="huggingface">Hugging Face</option>
+            <option value="ollama">Ollama</option>
+          </select>
 
-        {/* Models Grid */}
-        <div className="models-grid">
-          {models.length > 0 ? (
-            models.map((model) => (
-              <ModelCard
-                key={model.id}
-                model={model}
-                user={user}
-                onEdit={handleEditModel}
-                onDelete={handleDeleteModel}
-                onTest={handleTestModel}
-                onToggleStatus={handleToggleModelStatus}
-                onViewDetails={handleViewDetails}
-              />
-            ))
-          ) : (
-            <div className="empty-state">
-              <Brain size={64} />
-              <h3>No models found</h3>
-              <p>Add your first AI model to get started</p>
-              <PermissionGate 
-                userRole={user?.role} 
-                requiredRoles={['Admin']}
-              >
-                <button 
-                  className="btn btn-primary"
-                  onClick={handleCreateModel}
-                >
-                  <Plus size={20} />
-                  Add Model
+          <select
+            value={statusFilter}
+            onChange={handleStatusFilterChange}
+            className="filter-select"
+            disabled={isLoading}
+          >
+            <option value="">All Status</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+            <option value="approved">Approved</option>
+            <option value="pending">Pending</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="content-area">
+        {isLoading ? (
+          <div className="loading-container">
+            <LoadingSpinner size="large" />
+            <p>Loading models...</p>
+          </div>
+        ) : models.length === 0 ? (
+          <div className="empty-state">
+            <Brain className="w-12 h-12 text-gray-400" />
+            <h3>No models found</h3>
+            <p>
+              {searchTerm || providerFilter || statusFilter
+                ? 'Try adjusting your search or filters'
+                : 'Get started by adding your first AI model'
+              }
+            </p>
+            {!searchTerm && !providerFilter && !statusFilter && (
+              <PermissionGate resource="model" action="create" userRole={user?.role}>
+                <button onClick={handleCreateModel} className="btn btn-primary">
+                  <Plus className="w-4 h-4" />
+                  Add Your First Model
                 </button>
               </PermissionGate>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="models-grid">
+              {models.map((model) => (
+                <div key={model.id} className="model-card">
+                  <div className="card-header">
+                    <div className="card-title">
+                      <div className="model-info">
+                        {getProviderIcon(model.provider)}
+                        <h3>{model.name}</h3>
+                      </div>
+                      <div className="card-badges">
+                        {getStatusIcon(model.is_active, model.is_approved)}
+                      </div>
+                    </div>
+                    <p className="card-description">{model.description}</p>
+                  </div>
+
+                  <div className="card-content">
+                    <div className="card-stats">
+                      <div className="stat-item">
+                        <span className="stat-label">Provider</span>
+                        <span className="stat-value">{model.provider}</span>
+                      </div>
+                      <div className="stat-item">
+                        <span className="stat-label">Model</span>
+                        <span className="stat-value">{model.model_name}</span>
+                      </div>
+                      <div className="stat-item">
+                        <span className="stat-label">Context</span>
+                        <span className="stat-value">{model.context_window?.toLocaleString() || 'N/A'}</span>
+                      </div>
+                      <div className="stat-item">
+                        <span className="stat-label">Status</span>
+                        <span className={`stat-value ${model.is_active ? 'text-green-600' : 'text-red-600'}`}>
+                          {model.is_active ? 'Active' : 'Inactive'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="pricing-info">
+                      <div className="price-item">
+                        <DollarSign className="w-3 h-3" />
+                        <span className="price-label">Input:</span>
+                        <span className="price-value">{formatCost(model.input_cost_per_token)}</span>
+                      </div>
+                      <div className="price-item">
+                        <DollarSign className="w-3 h-3" />
+                        <span className="price-label">Output:</span>
+                        <span className="price-value">{formatCost(model.output_cost_per_token)}</span>
+                      </div>
+                    </div>
+
+                    {model.tags && model.tags.length > 0 && (
+                      <div className="card-tags">
+                        {model.tags.slice(0, 3).map((tag, index) => (
+                          <span key={index} className="tag">{tag}</span>
+                        ))}
+                        {model.tags.length > 3 && (
+                          <span className="tag-more">+{model.tags.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="card-footer">
+                    <div className="card-meta">
+                      <span>By {model.created_by}</span>
+                      <span>{new Date(model.created_at).toLocaleDateString()}</span>
+                    </div>
+
+                    <div className="card-actions">
+                      <button
+                        onClick={() => handleViewDetails(model)}
+                        className="btn btn-secondary btn-sm"
+                        title="View Details"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+
+                      <PermissionGate resource="model" action="test" userRole={user?.role}>
+                        <button
+                          onClick={() => handleTestModel(model)}
+                          className="btn btn-secondary btn-sm"
+                          title="Test Model"
+                          disabled={!model.is_active}
+                        >
+                          <TestTube className="w-4 h-4" />
+                        </button>
+                      </PermissionGate>
+
+                      <PermissionGate resource="model" action="update" userRole={user?.role}>
+                        <button
+                          onClick={() => handleEditModel(model)}
+                          className="btn btn-secondary btn-sm"
+                          title="Edit Model"
+                        >
+                          <Edit className="w-4 h-4" />
+                        </button>
+                      </PermissionGate>
+
+                      <PermissionGate resource="model" action="create" userRole={user?.role}>
+                        <button
+                          onClick={() => handleDuplicateModel(model)}
+                          className="btn btn-secondary btn-sm"
+                          title="Duplicate Model"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </button>
+                      </PermissionGate>
+
+                      <PermissionGate resource="model" action="update" userRole={user?.role}>
+                        <button
+                          onClick={() => handleToggleStatus(model.id, model.is_active)}
+                          className={`btn btn-sm ${model.is_active ? 'btn-warning' : 'btn-success'}`}
+                          title={model.is_active ? 'Deactivate' : 'Activate'}
+                        >
+                          {model.is_active ? <XCircle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
+                        </button>
+                      </PermissionGate>
+
+                      <PermissionGate resource="model" action="delete" userRole={user?.role}>
+                        <button
+                          onClick={() => handleDeleteModel(model.id)}
+                          className="btn btn-danger btn-sm"
+                          title="Delete Model"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </PermissionGate>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
-          )}
-        </div>
 
-        {/* Pagination */}
-        {pagination && pagination.total_pages > 1 && (
-          <div className="pagination">
-            <button
-              onClick={() => setCurrentPage(currentPage - 1)}
-              disabled={!pagination.has_prev}
-              className="pagination-btn"
-            >
-              Previous
-            </button>
-            <span className="pagination-info">
-              Page {currentPage} of {pagination.total_pages}
-            </span>
-            <button
-              onClick={() => setCurrentPage(currentPage + 1)}
-              disabled={!pagination.has_next}
-              className="pagination-btn"
-            >
-              Next
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-// Model Card Component
-const ModelCard = ({ model, user, onEdit, onDelete, onTest, onToggleStatus, onViewDetails }) => {
-  const canEdit = user?.role === 'Admin';
-
-  const getStatusIcon = (isActive) => {
-    return isActive 
-      ? <CheckCircle size={16} className="status-icon active" />
-      : <XCircle size={16} className="status-icon inactive" />;
-  };
-
-  const getProviderIcon = (provider) => {
-    switch (provider) {
-      case 'openai':
-      case 'azure':
-        return <Zap size={16} className="provider-icon openai" />;
-      case 'anthropic':
-        return <Brain size={16} className="provider-icon anthropic" />;
-      default:
-        return <Settings size={16} className="provider-icon default" />;
-    }
-  };
-
-  return (
-    <div className="model-card">
-      <div className="model-card-header">
-        <div className="model-info">
-          <div className="model-meta">
-            {getStatusIcon(model.is_active)}
-            <span className="status-text">
-              {model.is_active ? 'Active' : 'Inactive'}
-            </span>
-            {getProviderIcon(model.provider)}
-            <span className="provider-text">{model.provider || 'Unknown'}</span>
-          </div>
-          <h3 className="model-name">{model.name}</h3>
-          <p className="model-description">
-            {model.description || 'No description provided'}
-          </p>
-        </div>
-      </div>
-
-      <div className="model-card-body">
-        <div className="model-details">
-          <div className="detail-item">
-            <span className="detail-label">Model:</span>
-            <span className="detail-value">{model.model_name || 'Unknown'}</span>
-          </div>
-          <div className="detail-item">
-            <span className="detail-label">Max Tokens:</span>
-            <span className="detail-value">{model.max_tokens || 'N/A'}</span>
-          </div>
-          <div className="detail-item">
-            <span className="detail-label">Temperature:</span>
-            <span className="detail-value">{model.temperature ?? 'N/A'}</span>
-          </div>
-        </div>
-
-        {model.cost_per_token && (
-          <div className="model-cost">
-            <DollarSign size={16} />
-            <span>${(model.cost_per_token * 1000).toFixed(4)}/1K tokens</span>
-          </div>
+            {pagination && pagination.pages > 1 && (
+              <div className="pagination">
+                <button
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage === 1}
+                  className="pagination-btn"
+                >
+                  Previous
+                </button>
+                
+                <div className="pagination-info">
+                  Page {currentPage} of {pagination.pages}
+                </div>
+                
+                <button
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage === pagination.pages}
+                  className="pagination-btn"
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
 
-      <div className="model-card-footer">
-        <div className="model-meta">
-          <span className="created-date">
-            Added {new Date(model.created_at).toLocaleDateString()}
-          </span>
-        </div>
+      {/* Create/Edit Modal */}
+      <ModelModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        model={selectedModel}
+        onSuccess={onModalSuccess}
+        user={user}
+      />
 
-        <div className="model-actions">
-          <button
-            onClick={() => onViewDetails(model)}
-            className="action-btn secondary"
-            title="View Details"
-          >
-            <Eye size={16} />
-          </button>
-          
-          <button
-            onClick={() => onTest(model)}
-            className="action-btn primary"
-            title="Test Model"
-            disabled={!model.is_active}
-          >
-            <TestTube size={16} />
-          </button>
+      {/* Details Modal */}
+      {showDetailsModal && selectedModel && (
+        <div className="modal-backdrop" onClick={() => setShowDetailsModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Model Details</h2>
+              <button onClick={() => setShowDetailsModal(false)}>
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="details-section">
+                <h3>Basic Information</h3>
+                <div className="details-grid">
+                  <div className="detail-item">
+                    <label>Name</label>
+                    <span>{selectedModel.name}</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Provider</label>
+                    <span>{selectedModel.provider}</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Model Name</label>
+                    <span>{selectedModel.model_name}</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Status</label>
+                    <span>{selectedModel.is_active ? 'Active' : 'Inactive'}</span>
+                  </div>
+                </div>
+              </div>
 
-          {canEdit && (
-            <>
-              <button
-                onClick={() => onEdit(model)}
-                className="action-btn secondary"
-                title="Edit Model"
-              >
-                <Edit size={16} />
-              </button>
-              
-              <button
-                onClick={() => onToggleStatus(model.id, model.is_active)}
-                className="action-btn secondary"
-                title={model.is_active ? "Deactivate" : "Activate"}
-              >
-                {model.is_active ? <XCircle size={16} /> : <CheckCircle size={16} />}
-              </button>
-              
-              <button
-                onClick={() => onDelete(model)}
-                className="action-btn danger"
-                title="Delete Model"
-              >
-                <Trash2 size={16} />
-              </button>
-            </>
-          )}
+              <div className="details-section">
+                <h3>Configuration</h3>
+                <div className="details-grid">
+                  <div className="detail-item">
+                    <label>API Endpoint</label>
+                    <span className="code-text">{selectedModel.api_endpoint}</span>
+                  </div>
+                  {selectedModel.deployment_id && (
+                    <div className="detail-item">
+                      <label>Deployment ID</label>
+                      <span>{selectedModel.deployment_id}</span>
+                    </div>
+                  )}
+                  <div className="detail-item">
+                    <label>Context Window</label>
+                    <span>{selectedModel.context_window?.toLocaleString()}</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Max Tokens</label>
+                    <span>{selectedModel.max_tokens?.toLocaleString()}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="details-section">
+                <h3>Pricing</h3>
+                <div className="details-grid">
+                  <div className="detail-item">
+                    <label>Input Cost</label>
+                    <span>{formatCost(selectedModel.input_cost_per_token)}</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Output Cost</label>
+                    <span>{formatCost(selectedModel.output_cost_per_token)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {selectedModel.description && (
+                <div className="details-section">
+                  <h3>Description</h3>
+                  <p>{selectedModel.description}</p>
+                </div>
+              )}
+
+              {selectedModel.tags && selectedModel.tags.length > 0 && (
+                <div className="details-section">
+                  <h3>Tags</h3>
+                  <div className="tags-list">
+                    {selectedModel.tags.map((tag, index) => (
+                      <span key={index} className="tag">{tag}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Test Modal */}
+      {showTestModal && selectedModel && (
+        <div className="modal-backdrop" onClick={() => setShowTestModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Test Model: {selectedModel.name}</h2>
+              <button onClick={() => setShowTestModal(false)}>
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>Model testing interface would go here.</p>
+              <p>This would include a prompt input, test parameters, and response display.</p>
+            </div>
+            <div className="modal-footer">
+              <button
+                onClick={() => setShowTestModal(false)}
+                className="btn btn-secondary"
+              >
+                Close
+              </button>
+              <button className="btn btn-primary">
+                <Zap className="w-4 h-4" />
+                Run Test
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

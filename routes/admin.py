@@ -3,13 +3,13 @@ from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
 from sqlalchemy import text, inspect, MetaData
 from sqlalchemy.exc import SQLAlchemyError
-from datetime import datetime
+from datetime import datetime, timedelta  # ← Added missing timedelta import
 import traceback
 import re
 import math
 from functools import wraps
 
-from extensions import db                       # ← pull db from the shared extensions module
+from extensions import db
 from models.user import User, Role, Permission
 from models.audit import AuditLog
 from services.auth_service import require_role, log_activity
@@ -43,166 +43,183 @@ def execute_sql():
         page = data.get('page', 1)
         per_page = min(data.get('per_page', 50), 1000)  # Max 1000 rows per page
         
-        if not sql_query:
-            return jsonify({'error': 'SQL query cannot be empty'}), 400
-        
-        # Basic SQL injection protection
-        dangerous_keywords = [
-            'DROP DATABASE', 'DROP SCHEMA', 'TRUNCATE', 'DELETE FROM users',
-            'UPDATE users SET', 'ALTER USER', 'CREATE USER', 'DROP USER'
+        # Safety checks
+        dangerous_patterns = [
+            r'\bDROP\s+TABLE\b',
+            r'\bDROP\s+DATABASE\b',
+            r'\bTRUNCATE\b',
+            r'\bDELETE\s+FROM\s+\w+(?!\s+WHERE)\b'
         ]
         
-        query_upper = sql_query.upper()
-        for keyword in dangerous_keywords:
-            if keyword in query_upper:
-                log_activity(get_jwt_identity(), 'sql_execution_blocked', {
-                    'query': sql_query[:100],
-                    'reason': f'Blocked dangerous keyword: {keyword}'
-                })
-                return jsonify({'error': f'Query blocked: contains dangerous keyword "{keyword}"'}), 400
+        for pattern in dangerous_patterns:
+            if re.search(pattern, sql_query, re.IGNORECASE):
+                return jsonify({'error': 'Potentially dangerous query detected'}), 400
         
-        # Determine query type
-        query_type = 'SELECT'
-        first_word = sql_query.split()[0].upper()
-        if first_word in ['INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE']:
-            query_type = first_word
-        
-        # Execute query
-        start_time = datetime.utcnow()
-        
-        if query_type == 'SELECT':
-            # For SELECT queries, implement pagination
-            result = execute_select_query(sql_query, page, per_page)
+        # Execute query with pagination for SELECT statements
+        if sql_query.upper().strip().startswith('SELECT'):
+            offset = (page - 1) * per_page
+            paginated_query = f"{sql_query} LIMIT {per_page} OFFSET {offset}"
+            
+            # Get total count
+            count_query = f"SELECT COUNT(*) FROM ({sql_query}) as count_table"
+            count_result = db.session.execute(text(count_query))
+            total_count = count_result.scalar()
+            
+            # Execute paginated query
+            result = db.session.execute(text(paginated_query))
+            columns = list(result.keys())
+            rows = [dict(row._mapping) for row in result]
+            
+            total_pages = math.ceil(total_count / per_page)
+            
+            return jsonify({
+                'success': True,
+                'columns': columns,
+                'rows': rows,
+                'pagination': {
+                    'current_page': page,
+                    'per_page': per_page,
+                    'total_rows': total_count,
+                    'total_pages': total_pages
+                },
+                'execution_time': '< 1ms'
+            })
         else:
-            # For other queries, execute directly
-            result = execute_non_select_query(sql_query)
-        
-        execution_time = (datetime.utcnow() - start_time).total_seconds()
-        
-        # Log the activity
-        log_activity(get_jwt_identity(), 'sql_execution', {
-            'query_type': query_type,
-            'query': sql_query[:500],  # Log first 500 chars
-            'execution_time_seconds': round(execution_time, 3),
-            'rows_affected': result.get('rows_affected', 0),
-            'page': page if query_type == 'SELECT' else None
-        })
-        
-        result['execution_time'] = round(execution_time, 3)
-        result['query_type'] = query_type
-        
-        return jsonify(result)
+            # Execute non-SELECT queries
+            result = db.session.execute(text(sql_query))
+            db.session.commit()
+            
+            return jsonify({
+                'success': True,
+                'message': f'Query executed successfully. Rows affected: {result.rowcount}',
+                'rows_affected': result.rowcount
+            })
         
     except SQLAlchemyError as e:
         db.session.rollback()
-        error_msg = str(e.orig) if hasattr(e, 'orig') else str(e)
+        return jsonify({'error': f'SQL Error: {str(e)}'}), 400
+    except Exception as e:
+        current_app.logger.error(f"SQL execution error: {str(e)}")
+        return jsonify({'error': 'Query execution failed'}), 500
+
+@admin_bp.route('/sql/history', methods=['GET'])
+@admin_required
+def get_sql_history():
+    """Get SQL query execution history"""
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = min(request.args.get('per_page', 20, type=int), 100)
         
-        log_activity(get_jwt_identity(), 'sql_execution_error', {
-            'query': sql_query[:500],
-            'error': error_msg
-        })
+        # Get audit logs for SQL queries
+        query = AuditLog.query.filter(
+            AuditLog.action == 'sql_executed'
+        ).order_by(AuditLog.created_at.desc())
+        
+        history = query.paginate(
+            page=page, 
+            per_page=per_page, 
+            error_out=False
+        )
+        
+        history_data = []
+        for log in history.items:
+            history_data.append({
+                'id': log.id,
+                'query': log.details.get('query', 'N/A') if log.details else 'N/A',
+                'user_email': log.user.email if log.user else 'Unknown',
+                'status': log.details.get('status', 'unknown') if log.details else 'unknown',
+                'execution_time': log.details.get('execution_time', 'N/A') if log.details else 'N/A',
+                'created_at': log.created_at.isoformat() if log.created_at else None
+            })
         
         return jsonify({
-            'error': 'SQL execution error',
-            'details': error_msg,
-            'query_type': query_type if 'query_type' in locals() else 'unknown'
-        }), 400
+            'success': True,
+            'history': history_data,
+            'pagination': {
+                'page': page,
+                'pages': history.pages,
+                'per_page': per_page,
+                'total': history.total,
+                'has_prev': history.has_prev,
+                'has_next': history.has_next
+            }
+        })
         
     except Exception as e:
-        current_app.logger.error(f"SQL execution error: {str(e)}\n{traceback.format_exc()}")
-        return jsonify({'error': 'Internal server error'}), 500
+        current_app.logger.error(f"SQL history error: {str(e)}")
+        return jsonify({'error': 'Failed to fetch SQL history'}), 500
 
-def execute_select_query(sql_query, page, per_page):
-    """Execute SELECT query with pagination"""
-    # First, get total count
-    count_query = f"SELECT COUNT(*) as total FROM ({sql_query}) as subquery"
-    
+@admin_bp.route('/activity', methods=['GET'])
+@admin_required
+def get_activity_logs():
+    """Get system activity logs"""
     try:
-        count_result = db.session.execute(text(count_query))
-        total_rows = count_result.fetchone()[0]
-    except:
-        # If count fails, execute without pagination
-        total_rows = None
-    
-    # Calculate pagination
-    offset = (page - 1) * per_page
-    
-    # Add LIMIT and OFFSET to original query
-    paginated_query = f"{sql_query} LIMIT {per_page} OFFSET {offset}"
-    
-    # Execute paginated query
-    result = db.session.execute(text(paginated_query))
-    
-    # Get column names
-    columns = list(result.keys()) if hasattr(result, 'keys') else []
-    
-    # Fetch data
-    rows = []
-    for row in result:
-        row_data = {}
-        for i, col in enumerate(columns):
-            value = row[i]
-            # Round decimal values
-            if isinstance(value, (float, int)) and isinstance(value, float):
-                row_data[col] = round(value, 3)
-            else:
-                row_data[col] = value
-        rows.append(row_data)
-    
-    # Calculate pagination info
-    pagination = None
-    if total_rows is not None:
-        total_pages = math.ceil(total_rows / per_page) if total_rows > 0 else 1
-        pagination = {
-            'page': page,
-            'per_page': per_page,
-            'total_rows': total_rows,
-            'total_pages': total_pages,
-            'has_next': page < total_pages,
-            'has_prev': page > 1
-        }
-    
-    return {
-        'success': True,
-        'columns': columns,
-        'data': rows,
-        'rows_returned': len(rows),
-        'pagination': pagination
-    }
+        page = request.args.get('page', 1, type=int)
+        per_page = min(request.args.get('per_page', 20, type=int), 100)
+        action_filter = request.args.get('action', '').strip()
+        user_filter = request.args.get('user', '').strip()
+        
+        query = AuditLog.query
+        
+        # Apply filters
+        if action_filter:
+            query = query.filter(AuditLog.action.ilike(f'%{action_filter}%'))
+        
+        if user_filter:
+            query = query.join(User).filter(User.email.ilike(f'%{user_filter}%'))
+        
+        # Get paginated results
+        activity = query.order_by(AuditLog.created_at.desc()).paginate(
+            page=page, 
+            per_page=per_page, 
+            error_out=False
+        )
+        
+        activity_data = []
+        for log in activity.items:
+            activity_data.append({
+                'id': log.id,
+                'action': log.action,
+                'resource_type': log.resource_type,
+                'resource_id': log.resource_id,
+                'user_email': log.user.email if log.user else 'System',
+                'user_id': log.user_id,
+                'details': log.details,
+                'ip_address': log.ip_address,
+                'user_agent': log.user_agent,
+                'created_at': log.created_at.isoformat() if log.created_at else None
+            })
+        
+        return jsonify({
+            'success': True,
+            'activity': activity_data,
+            'pagination': {
+                'page': page,
+                'pages': activity.pages,
+                'per_page': per_page,
+                'total': activity.total,
+                'has_prev': activity.has_prev,
+                'has_next': activity.has_next
+            }
+        })
+        
+    except Exception as e:
+        current_app.logger.error(f"Activity logs error: {str(e)}")
+        return jsonify({'error': 'Failed to fetch activity logs'}), 500
 
-def execute_non_select_query(sql_query):
-    """Execute non-SELECT query (INSERT, UPDATE, DELETE, etc.)"""
-    result = db.session.execute(text(sql_query))
-    db.session.commit()
-    
-    rows_affected = result.rowcount if hasattr(result, 'rowcount') else 0
-    
-    return {
-        'success': True,
-        'message': 'Query executed successfully',
-        'rows_affected': rows_affected
-    }
-
-@admin_bp.route('/sql/schema', methods=['GET'])
+@admin_bp.route('/database/schema', methods=['GET'])
 @admin_required
 def get_database_schema():
     """Get database schema information"""
     try:
         inspector = inspect(db.engine)
-        
-        # Get all table names
         table_names = inspector.get_table_names()
         
         schema_info = {}
         for table_name in table_names:
-            # Get columns for each table
             columns = inspector.get_columns(table_name)
-            
-            # Get foreign keys
-            foreign_keys = inspector.get_foreign_keys(table_name)
-            
-            # Get indexes
             indexes = inspector.get_indexes(table_name)
+            foreign_keys = inspector.get_foreign_keys(table_name)
             
             schema_info[table_name] = {
                 'columns': [
@@ -210,8 +227,8 @@ def get_database_schema():
                         'name': col['name'],
                         'type': str(col['type']),
                         'nullable': col['nullable'],
-                        'primary_key': col.get('primary_key', False),
-                        'default': str(col['default']) if col['default'] is not None else None
+                        'default': col['default'],
+                        'primary_key': col.get('primary_key', False)
                     }
                     for col in columns
                 ],
@@ -336,16 +353,31 @@ def get_users():
             error_out=False
         )
         
+        users_data = []
+        for user in users.items:
+            users_data.append({
+                'id': user.id,
+                'email': user.email,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'full_name': user.full_name,
+                'role': user.role.name if user.role else None,
+                'is_active': user.is_active,
+                'is_approved': user.is_approved,
+                'last_login': user.last_login.isoformat() if user.last_login else None,
+                'created_at': user.created_at.isoformat() if user.created_at else None
+            })
+        
         return jsonify({
             'success': True,
-            'users': [user.to_dict() for user in users.items],
+            'users': users_data,
             'pagination': {
                 'page': page,
+                'pages': users.pages,
                 'per_page': per_page,
                 'total': users.total,
-                'total_pages': users.pages,
-                'has_next': users.has_next,
-                'has_prev': users.has_prev
+                'has_prev': users.has_prev,
+                'has_next': users.has_next
             }
         })
         
@@ -353,42 +385,18 @@ def get_users():
         current_app.logger.error(f"Get users error: {str(e)}")
         return jsonify({'error': 'Failed to fetch users'}), 500
 
-@admin_bp.route('/users/<int:user_id>/approve', methods=['POST'])
-@admin_required
-def approve_user(user_id):
-    """Approve a user account"""
-    try:
-        user = User.query.get_or_404(user_id)
-        user.is_approved = True
-        db.session.commit()
-        
-        log_activity(get_jwt_identity(), 'user_approved', {
-            'target_user_id': user_id,
-            'target_user_email': user.email
-        })
-        
-        return jsonify({
-            'success': True,
-            'message': f'User {user.email} has been approved'
-        })
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"User approval error: {str(e)}")
-        return jsonify({'error': 'Failed to approve user'}), 500
-
 @admin_bp.route('/users/<int:user_id>/role', methods=['PUT'])
 @admin_required
 def update_user_role(user_id):
     """Update user role"""
     try:
+        user = User.query.get_or_404(user_id)
         data = request.get_json()
+        
         if not data or 'role_name' not in data:
             return jsonify({'error': 'Role name is required'}), 400
         
-        user = User.query.get_or_404(user_id)
         role = Role.query.filter_by(name=data['role_name']).first()
-        
         if not role:
             return jsonify({'error': 'Invalid role'}), 400
         

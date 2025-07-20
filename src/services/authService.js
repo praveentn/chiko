@@ -2,306 +2,230 @@
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
 class AuthService {
-  async login(email, password) {
+  constructor() {
+    this.token = localStorage.getItem('token');
+  }
+
+  async apiCall(endpoint, options = {}) {
+    const url = endpoint.startsWith('http') ? endpoint : `${API_BASE_URL}${endpoint}`;
+    
+    const config = {
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+      ...options,
+    };
+
+    // Add auth token if available
+    if (this.token) {
+      config.headers.Authorization = `Bearer ${this.token}`;
+    }
+
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password }),
-      });
-
-      const data = await response.json();
-
-      if (response.ok) {
-        return {
-          success: true,
-          user: data.user,
-          token: data.access_token,
-        };
-      } else {
-        return {
-          success: false,
-          error: data.error || 'Login failed',
-        };
+      console.log(`API Call: ${config.method || 'GET'} ${url}`);
+      const response = await fetch(url, config);
+      
+      // Handle 401 unauthorized responses
+      if (response.status === 401) {
+        this.logout();
+        window.location.href = '/login';
+        return null;
       }
+
+      return response;
     } catch (error) {
-      return {
-        success: false,
-        error: 'Network error: ' + error.message,
-      };
+      console.error('API call failed:', error);
+      throw error;
     }
   }
 
-  async register(userData) {
+  async login(email, password) {
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/register`, {
+      const response = await this.apiCall('/auth/login', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(userData),
+        body: JSON.stringify({ email, password }),
       });
 
-      const data = await response.json();
-
-      if (response.ok) {
-        return {
-          success: true,
-          message: data.message,
-        };
+      if (response && response.ok) {
+        const data = await response.json();
+        this.token = data.access_token;
+        localStorage.setItem('token', this.token);
+        return { success: true, user: data.user, token: data.access_token };
       } else {
-        return {
-          success: false,
-          error: data.error || 'Registration failed',
-        };
+        const errorData = response ? await response.json() : { error: 'Login failed' };
+        return { success: false, error: errorData.error };
       }
     } catch (error) {
-      return {
-        success: false,
-        error: 'Network error: ' + error.message,
-      };
+      console.error('Login error:', error);
+      return { success: false, error: 'Network error occurred' };
+    }
+  }
+
+  async logout() {
+    try {
+      if (this.token) {
+        // Attempt to logout on server
+        await this.apiCall('/auth/logout', {
+          method: 'POST',
+        });
+      }
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      // Always clear local storage
+      this.token = null;
+      localStorage.removeItem('token');
     }
   }
 
   async getCurrentUser() {
     try {
-      const token = localStorage.getItem('token');
-      if (!token) {
+      if (!this.token) {
         return null;
       }
 
-      const response = await fetch(`${API_BASE_URL}/auth/me`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-
-      if (response.ok) {
+      const response = await this.apiCall('/auth/profile');
+      
+      if (response && response.ok) {
         const data = await response.json();
         return data.user;
       } else {
-        // Token is invalid, remove it
-        localStorage.removeItem('token');
+        // Token might be invalid
+        this.logout();
         return null;
       }
     } catch (error) {
-      console.error('Error getting current user:', error);
-      localStorage.removeItem('token');
+      console.error('Get current user error:', error);
+      this.logout();
       return null;
     }
   }
 
-  async refreshToken() {
+  async verifyToken() {
     try {
-      const token = localStorage.getItem('token');
-      if (!token) {
-        return null;
+      if (!this.token) {
+        return false;
       }
 
-      const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-
-      if (response.ok) {
+      const response = await this.apiCall('/auth/verify');
+      
+      if (response && response.ok) {
         const data = await response.json();
-        localStorage.setItem('token', data.access_token);
-        return data.access_token;
+        return data.valid;
       } else {
-        localStorage.removeItem('token');
-        return null;
+        this.logout();
+        return false;
       }
     } catch (error) {
-      console.error('Error refreshing token:', error);
-      localStorage.removeItem('token');
-      return null;
+      console.error('Token verification error:', error);
+      this.logout();
+      return false;
     }
   }
 
-  async changePassword(oldPassword, newPassword) {
+  async register(userData) {
     try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`${API_BASE_URL}/auth/change-password`, {
+      const response = await this.apiCall('/auth/register', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          old_password: oldPassword,
-          new_password: newPassword,
-        }),
+        body: JSON.stringify(userData),
       });
 
-      const data = await response.json();
-
-      return {
-        success: response.ok,
-        error: response.ok ? null : (data.error || 'Password change failed'),
-        message: response.ok ? data.message : null,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: 'Network error: ' + error.message,
-      };
-    }
-  }
-
-  async forgotPassword(email) {
-    try {
-      const response = await fetch(`${API_BASE_URL}/auth/forgot-password`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email }),
-      });
-
-      const data = await response.json();
-
-      return {
-        success: response.ok,
-        error: response.ok ? null : (data.error || 'Request failed'),
-        message: response.ok ? data.message : null,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: 'Network error: ' + error.message,
-      };
-    }
-  }
-
-  async resetPassword(token, newPassword) {
-    try {
-      const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          token,
-          new_password: newPassword,
-        }),
-      });
-
-      const data = await response.json();
-
-      return {
-        success: response.ok,
-        error: response.ok ? null : (data.error || 'Password reset failed'),
-        message: response.ok ? data.message : null,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: 'Network error: ' + error.message,
-      };
-    }
-  }
-
-  logout() {
-    localStorage.removeItem('token');
-    // Optionally call server-side logout endpoint
-    this.serverLogout();
-  }
-
-  async serverLogout() {
-    try {
-      const token = localStorage.getItem('token');
-      if (token) {
-        await fetch(`${API_BASE_URL}/auth/logout`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-        });
+      if (response && response.ok) {
+        const data = await response.json();
+        return { success: true, message: data.message };
+      } else {
+        const errorData = response ? await response.json() : { error: 'Registration failed' };
+        return { success: false, error: errorData.error };
       }
     } catch (error) {
-      // Ignore logout errors
-      console.error('Logout error:', error);
+      console.error('Registration error:', error);
+      return { success: false, error: 'Network error occurred' };
+    }
+  }
+
+  async updateProfile(profileData) {
+    try {
+      const response = await this.apiCall('/auth/profile', {
+        method: 'PUT',
+        body: JSON.stringify(profileData),
+      });
+
+      if (response && response.ok) {
+        const data = await response.json();
+        return { success: true, user: data.user };
+      } else {
+        const errorData = response ? await response.json() : { error: 'Profile update failed' };
+        return { success: false, error: errorData.error };
+      }
+    } catch (error) {
+      console.error('Profile update error:', error);
+      return { success: false, error: 'Network error occurred' };
+    }
+  }
+
+  async changePassword(passwordData) {
+    try {
+      const response = await this.apiCall('/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify(passwordData),
+      });
+
+      if (response && response.ok) {
+        const data = await response.json();
+        return { success: true, message: data.message };
+      } else {
+        const errorData = response ? await response.json() : { error: 'Password change failed' };
+        return { success: false, error: errorData.error };
+      }
+    } catch (error) {
+      console.error('Change password error:', error);
+      return { success: false, error: 'Network error occurred' };
+    }
+  }
+
+  async getUserSessions() {
+    try {
+      const response = await this.apiCall('/auth/sessions');
+      
+      if (response && response.ok) {
+        const data = await response.json();
+        return { success: true, sessions: data.sessions };
+      } else {
+        const errorData = response ? await response.json() : { error: 'Failed to get sessions' };
+        return { success: false, error: errorData.error };
+      }
+    } catch (error) {
+      console.error('Get sessions error:', error);
+      return { success: false, error: 'Network error occurred' };
+    }
+  }
+
+  async revokeSession(sessionId) {
+    try {
+      const response = await this.apiCall(`/auth/sessions/${sessionId}`, {
+        method: 'DELETE',
+      });
+
+      if (response && response.ok) {
+        const data = await response.json();
+        return { success: true, message: data.message };
+      } else {
+        const errorData = response ? await response.json() : { error: 'Failed to revoke session' };
+        return { success: false, error: errorData.error };
+      }
+    } catch (error) {
+      console.error('Revoke session error:', error);
+      return { success: false, error: 'Network error occurred' };
     }
   }
 
   isAuthenticated() {
-    return !!localStorage.getItem('token');
+    return !!this.token;
   }
 
   getToken() {
-    return localStorage.getItem('token');
-  }
-
-  // Utility method to make authenticated API calls
-  async apiCall(endpoint, options = {}) {
-    const token = localStorage.getItem('token');
-    
-    const defaultOptions = {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token && { 'Authorization': `Bearer ${token}` }),
-      },
-    };
-
-    const finalOptions = {
-      ...defaultOptions,
-      ...options,
-      headers: {
-        ...defaultOptions.headers,
-        ...options.headers,
-      },
-    };
-
-    try {
-      const response = await fetch(`${API_BASE_URL}${endpoint}`, finalOptions);
-      
-      // Handle token expiration
-      if (response.status === 401) {
-        // Try to refresh token
-        const newToken = await this.refreshToken();
-        if (newToken) {
-          // Retry the request with new token
-          finalOptions.headers.Authorization = `Bearer ${newToken}`;
-          return await fetch(`${API_BASE_URL}${endpoint}`, finalOptions);
-        } else {
-          // Refresh failed, redirect to login
-          this.logout();
-          window.location.href = '/login';
-          return null;
-        }
-      }
-
-      return response;
-    } catch (error) {
-      console.error('API call error:', error);
-      throw error;
-    }
-  }
-
-  // Check if user has specific role
-  hasRole(user, requiredRole) {
-    if (!user || !user.role) {
-      return false;
-    }
-    
-    if (Array.isArray(requiredRole)) {
-      return requiredRole.includes(user.role);
-    }
-    
-    return user.role === requiredRole;
-  }
-
-  // Check if user has specific permission
-  hasPermission(user, permission) {
-    if (!user || !user.permissions) {
-      return false;
-    }
-    
-    return user.permissions.includes(permission);
+    return this.token;
   }
 }
 

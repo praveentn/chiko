@@ -1,32 +1,29 @@
 // src/pages/ToolsPage.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Plus,
   Search,
-  Wrench as ToolIcon,
+  Wrench,
   Edit,
   Trash2,
   Eye,
-  Play,
-  Pause,
+  TestTube,
   Copy,
-  Check,
   Globe,
   Lock,
   Users as Team,
   AlertCircle,
   CheckCircle,
   XCircle,
-  Settings,
-  Activity,
   Zap,
-  Code,
-  Database,
-  Cloud,
-  Server
+  Shield,
+  Clock,
+  Activity,
+  X
 } from 'lucide-react';
 
 import LoadingSpinner from '../components/LoadingSpinner';
+import ToolModal from '../components/ToolModal';
 import { PermissionGate } from '../components/ProtectedRoute';
 import authService from '../services/authService';
 import './ToolsPage.css';
@@ -36,7 +33,7 @@ const ToolsPage = ({ user }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedTool, setSelectedTool] = useState(null);
@@ -45,38 +42,51 @@ const ToolsPage = ({ user }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pagination, setPagination] = useState(null);
 
-  useEffect(() => {
-    loadTools();
-  }, [currentPage, searchTerm, categoryFilter, statusFilter]);
+  const toolTypes = [
+    { value: 'function', label: 'Function' },
+    { value: 'api', label: 'API' },
+    { value: 'webhook', label: 'Webhook' },
+    { value: 'mcp_server', label: 'MCP Server' }
+  ];
 
-  const loadTools = async () => {
+  const loadTools = useCallback(async () => {
     setIsLoading(true);
+    setError(null);
+    
     try {
       const params = new URLSearchParams({
-        page: currentPage,
-        per_page: 20,
+        page: currentPage.toString(),
+        per_page: '20',
         ...(searchTerm && { search: searchTerm }),
-        ...(categoryFilter && { category: categoryFilter }),
+        ...(typeFilter && { tool_type: typeFilter }),
         ...(statusFilter && { status: statusFilter })
       });
 
       const response = await authService.apiCall(`/tools?${params}`);
-      if (response?.ok) {
+      
+      if (response && response.ok) {
         const data = await response.json();
         setTools(data.tools || []);
-        setPagination(data.pagination);
+        setPagination(data.pagination || null);
       } else {
-        throw new Error('Failed to load tools');
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to load tools');
       }
     } catch (error) {
       console.error('Failed to load tools:', error);
-      setError('Failed to load tools');
+      setError(error.message || 'Failed to load tools');
+      setTools([]);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [currentPage, searchTerm, typeFilter, statusFilter]);
+
+  useEffect(() => {
+    loadTools();
+  }, [loadTools]);
 
   const handleCreateTool = () => {
+    setSelectedTool(null);
     setShowCreateModal(true);
   };
 
@@ -86,47 +96,45 @@ const ToolsPage = ({ user }) => {
   };
 
   const handleDeleteTool = async (toolId) => {
-    if (window.confirm('Are you sure you want to delete this tool?')) {
-      try {
-        const response = await authService.apiCall(`/tools/${toolId}`, {
-          method: 'DELETE'
-        });
-        
-        if (response?.ok) {
-          setTools(tools.filter(tool => tool.id !== toolId));
-        } else {
-          throw new Error('Failed to delete tool');
-        }
-      } catch (error) {
-        console.error('Delete tool error:', error);
-        setError('Failed to delete tool');
+    if (!window.confirm('Are you sure you want to delete this tool?')) {
+      return;
+    }
+
+    try {
+      const response = await authService.apiCall(`/tools/${toolId}`, {
+        method: 'DELETE'
+      });
+
+      if (response?.ok) {
+        await loadTools(); // Reload the list
+      } else {
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to delete tool');
       }
+    } catch (error) {
+      console.error('Delete tool error:', error);
+      setError(error.message || 'Failed to delete tool');
     }
   };
 
-  const handleTestTool = (tool) => {
-    setSelectedTool(tool);
-    setShowTestModal(true);
-  };
-
-  const handleToggleToolStatus = async (toolId, currentStatus) => {
+  const handleToggleStatus = async (toolId, currentStatus) => {
     try {
-      const response = await authService.apiCall(`/tools/${toolId}/toggle`, {
-        method: 'PUT'
+      const response = await authService.apiCall(`/tools/${toolId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          is_active: !currentStatus
+        })
       });
-      
+
       if (response?.ok) {
-        setTools(tools.map(tool => 
-          tool.id === toolId 
-            ? { ...tool, is_active: !currentStatus }
-            : tool
-        ));
+        await loadTools(); // Reload the list
       } else {
-        throw new Error('Failed to toggle tool status');
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to update tool status');
       }
     } catch (error) {
-      console.error('Toggle tool status error:', error);
-      setError('Failed to toggle tool status');
+      console.error('Toggle status error:', error);
+      setError(error.message || 'Failed to update tool status');
     }
   };
 
@@ -135,17 +143,22 @@ const ToolsPage = ({ user }) => {
       const response = await authService.apiCall(`/tools/${tool.id}/duplicate`, {
         method: 'POST'
       });
-      
+
       if (response?.ok) {
-        const data = await response.json();
-        setTools([data.tool, ...tools]);
+        await loadTools(); // Reload the list
       } else {
-        throw new Error('Failed to duplicate tool');
+        const errorData = response ? await response.json() : {};
+        throw new Error(errorData.error || 'Failed to duplicate tool');
       }
     } catch (error) {
       console.error('Duplicate tool error:', error);
-      setError('Failed to duplicate tool');
+      setError(error.message || 'Failed to duplicate tool');
     }
+  };
+
+  const handleTestTool = (tool) => {
+    setSelectedTool(tool);
+    setShowTestModal(true);
   };
 
   const handleViewDetails = (tool) => {
@@ -153,323 +166,496 @@ const ToolsPage = ({ user }) => {
     setShowDetailsModal(true);
   };
 
-  if (isLoading) {
-    return (
-      <div className="page-loading">
-        <LoadingSpinner size="large" />
-        <p>Loading tools...</p>
-      </div>
-    );
-  }
+  const handlePageChange = (page) => {
+    setCurrentPage(page);
+  };
+
+  const handleSearchChange = (e) => {
+    setSearchTerm(e.target.value);
+    setCurrentPage(1);
+  };
+
+  const handleTypeFilterChange = (e) => {
+    setTypeFilter(e.target.value);
+    setCurrentPage(1);
+  };
+
+  const handleStatusFilterChange = (e) => {
+    setStatusFilter(e.target.value);
+    setCurrentPage(1);
+  };
+
+  const getToolTypeIcon = (toolType) => {
+    switch (toolType) {
+      case 'function':
+        return <Zap className="w-4 h-4 text-blue-500" />;
+      case 'api':
+        return <Globe className="w-4 h-4 text-green-500" />;
+      case 'webhook':
+        return <Activity className="w-4 h-4 text-orange-500" />;
+      case 'mcp_server':
+        return <Wrench className="w-4 h-4 text-purple-500" />;
+      default:
+        return <Wrench className="w-4 h-4 text-gray-500" />;
+    }
+  };
+
+  const getStatusIcon = (isActive, isApproved) => {
+    if (isActive && isApproved) {
+      return <CheckCircle className="w-4 h-4 text-green-500" />;
+    } else if (!isActive) {
+      return <XCircle className="w-4 h-4 text-red-500" />;
+    } else {
+      return <AlertCircle className="w-4 h-4 text-yellow-500" />;
+    }
+  };
+
+  const getHealthStatusIcon = (healthStatus) => {
+    switch (healthStatus) {
+      case 'healthy':
+        return <CheckCircle className="w-3 h-3 text-green-500" />;
+      case 'unhealthy':
+        return <XCircle className="w-3 h-3 text-red-500" />;
+      case 'warning':
+        return <AlertCircle className="w-3 h-3 text-yellow-500" />;
+      default:
+        return <Clock className="w-3 h-3 text-gray-500" />;
+    }
+  };
+
+  const formatLastHealthCheck = (lastCheck) => {
+    if (!lastCheck) return 'Never checked';
+    const date = new Date(lastCheck);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffMins < 1440) return `${Math.floor(diffMins / 60)}h ago`;
+    return date.toLocaleDateString();
+  };
+
+  const onModalSuccess = () => {
+    loadTools();
+  };
 
   return (
     <div className="tools-page">
       <div className="page-header">
         <div className="header-content">
           <div className="header-text">
-            <h1 className="page-title">
-              <ToolIcon className="page-icon" />
+            <h1>
+              <Wrench className="w-6 h-6" />
               Tools
             </h1>
-            <p className="page-subtitle">
-              Manage your AI tools and integrations
-            </p>
+            <p>Manage external tools and integrations</p>
           </div>
-          <PermissionGate 
-            userRole={user?.role} 
-            requiredRoles={['Admin', 'Developer']}
-          >
-            <button 
-              className="btn btn-primary"
+          <PermissionGate resource="tool" action="create" userRole={user?.role}>
+            <button
               onClick={handleCreateTool}
+              className="btn btn-primary"
+              disabled={isLoading}
             >
-              <Plus size={20} />
+              <Plus className="w-4 h-4" />
               Add Tool
             </button>
           </PermissionGate>
         </div>
       </div>
 
-      <div className="page-content">
-        {/* Filters */}
-        <div className="filters-section">
-          <div className="search-box">
-            <Search className="search-icon" />
-            <input
-              type="text"
-              placeholder="Search tools..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="search-input"
-            />
-          </div>
+      {error && (
+        <div className="error-banner">
+          <AlertCircle className="w-4 h-4" />
+          <span>{error}</span>
+          <button onClick={() => setError(null)}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
-          <div className="filter-controls">
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              className="filter-select"
-            >
-              <option value="">All Categories</option>
-              <option value="api">API Tools</option>
-              <option value="database">Database</option>
-              <option value="file">File Processing</option>
-              <option value="web">Web Scraping</option>
-              <option value="ai">AI Services</option>
-              <option value="automation">Automation</option>
-            </select>
-
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="filter-select"
-            >
-              <option value="">All Status</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-              <option value="testing">Testing</option>
-              <option value="deprecated">Deprecated</option>
-            </select>
-          </div>
+      <div className="filters-section">
+        <div className="search-box">
+          <Search className="w-4 h-4" />
+          <input
+            type="text"
+            placeholder="Search tools..."
+            value={searchTerm}
+            onChange={handleSearchChange}
+            disabled={isLoading}
+          />
         </div>
 
-        {/* Error Display */}
-        {error && (
-          <div className="error-message">
-            <AlertCircle size={20} />
-            <span>{error}</span>
-            <button 
-              onClick={() => setError(null)}
-              className="error-close"
-            >
-              <XCircle size={16} />
-            </button>
-          </div>
-        )}
+        <div className="filter-controls">
+          <select
+            value={typeFilter}
+            onChange={handleTypeFilterChange}
+            className="filter-select"
+            disabled={isLoading}
+          >
+            <option value="">All Types</option>
+            {toolTypes.map(type => (
+              <option key={type.value} value={type.value}>
+                {type.label}
+              </option>
+            ))}
+          </select>
 
-        {/* Tools Grid */}
-        <div className="tools-grid">
-          {tools.length > 0 ? (
-            tools.map((tool) => (
-              <ToolCard
-                key={tool.id}
-                tool={tool}
-                user={user}
-                onEdit={handleEditTool}
-                onDelete={handleDeleteTool}
-                onTest={handleTestTool}
-                onToggleStatus={handleToggleToolStatus}
-                onDuplicate={handleDuplicateTool}
-                onViewDetails={handleViewDetails}
-              />
-            ))
-          ) : (
-            <div className="empty-state">
-              <ToolIcon size={64} />
-              <h3>No tools found</h3>
-              <p>Add your first tool to extend AI capabilities</p>
-              <PermissionGate 
-                userRole={user?.role} 
-                requiredRoles={['Admin', 'Developer']}
-              >
-                <button 
-                  className="btn btn-primary"
-                  onClick={handleCreateTool}
-                >
-                  <Plus size={20} />
-                  Add Tool
+          <select
+            value={statusFilter}
+            onChange={handleStatusFilterChange}
+            className="filter-select"
+            disabled={isLoading}
+          >
+            <option value="">All Status</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+            <option value="approved">Approved</option>
+            <option value="pending">Pending</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="content-area">
+        {isLoading ? (
+          <div className="loading-container">
+            <LoadingSpinner size="large" />
+            <p>Loading tools...</p>
+          </div>
+        ) : tools.length === 0 ? (
+          <div className="empty-state">
+            <Wrench className="w-12 h-12 text-gray-400" />
+            <h3>No tools found</h3>
+            <p>
+              {searchTerm || typeFilter || statusFilter
+                ? 'Try adjusting your search or filters'
+                : 'Get started by adding your first tool'
+              }
+            </p>
+            {!searchTerm && !typeFilter && !statusFilter && (
+              <PermissionGate resource="tool" action="create" userRole={user?.role}>
+                <button onClick={handleCreateTool} className="btn btn-primary">
+                  <Plus className="w-4 h-4" />
+                  Add Your First Tool
                 </button>
               </PermissionGate>
-            </div>
-          )}
-        </div>
-
-        {/* Pagination */}
-        {pagination && pagination.total_pages > 1 && (
-          <div className="pagination">
-            <button
-              onClick={() => setCurrentPage(currentPage - 1)}
-              disabled={!pagination.has_prev}
-              className="pagination-btn"
-            >
-              Previous
-            </button>
-            <span className="pagination-info">
-              Page {currentPage} of {pagination.total_pages}
-            </span>
-            <button
-              onClick={() => setCurrentPage(currentPage + 1)}
-              disabled={!pagination.has_next}
-              className="pagination-btn"
-            >
-              Next
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-// Tool Card Component
-const ToolCard = ({ tool, user, onEdit, onDelete, onTest, onToggleStatus, onDuplicate, onViewDetails }) => {
-  const canEdit = user?.role === 'Admin' || user?.role === 'Developer';
-
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'active':
-        return <CheckCircle size={16} className="status-icon active" />;
-      case 'inactive':
-        return <Pause size={16} className="status-icon inactive" />;
-      case 'testing':
-        return <AlertCircle size={16} className="status-icon testing" />;
-      case 'deprecated':
-        return <XCircle size={16} className="status-icon deprecated" />;
-      default:
-        return <AlertCircle size={16} className="status-icon unknown" />;
-    }
-  };
-
-  const getCategoryIcon = (category) => {
-    switch (category) {
-      case 'api':
-        return <Cloud size={16} className="category-icon api" />;
-      case 'database':
-        return <Database size={16} className="category-icon database" />;
-      case 'file':
-        return <Code size={16} className="category-icon file" />;
-      case 'web':
-        return <Globe size={16} className="category-icon web" />;
-      case 'ai':
-        return <Zap size={16} className="category-icon ai" />;
-      case 'automation':
-        return <Settings size={16} className="category-icon automation" />;
-      default:
-        return <ToolIcon size={16} className="category-icon default" />;
-    }
-  };
-
-  return (
-    <div className="tool-card">
-      <div className="tool-card-header">
-        <div className="tool-info">
-          <div className="tool-meta">
-            {getStatusIcon(tool.status)}
-            <span className="status-text">{tool.status || 'Unknown'}</span>
-            {getCategoryIcon(tool.category)}
-            <span className="category-text">{tool.category || 'General'}</span>
-          </div>
-          <h3 className="tool-name">{tool.name}</h3>
-          <p className="tool-description">
-            {tool.description || 'No description provided'}
-          </p>
-        </div>
-      </div>
-
-      <div className="tool-card-body">
-        <div className="tool-details">
-          <div className="detail-item">
-            <span className="detail-label">Type:</span>
-            <span className="detail-value">{tool.tool_type || 'Custom'}</span>
-          </div>
-          <div className="detail-item">
-            <span className="detail-label">Version:</span>
-            <span className="detail-value">{tool.version || '1.0.0'}</span>
-          </div>
-          <div className="detail-item">
-            <span className="detail-label">Usage:</span>
-            <span className="detail-value">{tool.usage_count || 0} times</span>
-          </div>
-        </div>
-
-        {tool.tags && tool.tags.length > 0 && (
-          <div className="tool-tags">
-            {tool.tags.slice(0, 3).map((tag, index) => (
-              <span key={index} className="tag">
-                {tag}
-              </span>
-            ))}
-            {tool.tags.length > 3 && (
-              <span className="tag-more">+{tool.tags.length - 3}</span>
             )}
           </div>
-        )}
+        ) : (
+          <>
+            <div className="tools-grid">
+              {tools.map((tool) => (
+                <div key={tool.id} className="tool-card">
+                  <div className="card-header">
+                    <div className="card-title">
+                      <div className="tool-info">
+                        {getToolTypeIcon(tool.tool_type)}
+                        <h3>{tool.name}</h3>
+                      </div>
+                      <div className="card-badges">
+                        {getStatusIcon(tool.is_active, tool.is_approved)}
+                      </div>
+                    </div>
+                    <p className="card-description">{tool.description}</p>
+                  </div>
 
-        {tool.config && (
-          <div className="tool-config-preview">
-            <div className="config-label">Configuration:</div>
-            <div className="config-text">
-              {Object.keys(tool.config).length} parameters configured
+                  <div className="card-content">
+                    <div className="card-stats">
+                      <div className="stat-item">
+                        <span className="stat-label">Type</span>
+                        <span className="stat-value">{tool.tool_type}</span>
+                      </div>
+                      <div className="stat-item">
+                        <span className="stat-label">Rate Limit</span>
+                        <span className="stat-value">{tool.rate_limit || 'N/A'}/hour</span>
+                      </div>
+                      <div className="stat-item">
+                        <span className="stat-label">Timeout</span>
+                        <span className="stat-value">{tool.timeout || 30}s</span>
+                      </div>
+                      <div className="stat-item">
+                        <span className="stat-label">Status</span>
+                        <span className={`stat-value ${tool.is_active ? 'text-green-600' : 'text-red-600'}`}>
+                          {tool.is_active ? 'Active' : 'Inactive'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="health-status">
+                      <div className="health-item">
+                        {getHealthStatusIcon(tool.health_status)}
+                        <span className="health-label">Health: {tool.health_status || 'Unknown'}</span>
+                      </div>
+                      <div className="health-item">
+                        <Clock className="w-3 h-3" />
+                        <span className="health-label">
+                          Last check: {formatLastHealthCheck(tool.last_health_check)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {tool.safety_tags && tool.safety_tags.length > 0 && (
+                      <div className="safety-tags">
+                        <Shield className="w-3 h-3" />
+                        <span className="safety-label">Safety tags:</span>
+                        <div className="safety-tag-list">
+                          {tool.safety_tags.slice(0, 2).map((tag, index) => (
+                            <span key={index} className="safety-tag">{tag}</span>
+                          ))}
+                          {tool.safety_tags.length > 2 && (
+                            <span className="safety-tag-more">+{tool.safety_tags.length - 2}</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {tool.tags && tool.tags.length > 0 && (
+                      <div className="card-tags">
+                        {tool.tags.slice(0, 3).map((tag, index) => (
+                          <span key={index} className="tag">{tag}</span>
+                        ))}
+                        {tool.tags.length > 3 && (
+                          <span className="tag-more">+{tool.tags.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="card-footer">
+                    <div className="card-meta">
+                      <span>By {tool.created_by}</span>
+                      <span>{new Date(tool.created_at).toLocaleDateString()}</span>
+                    </div>
+
+                    <div className="card-actions">
+                      <button
+                        onClick={() => handleViewDetails(tool)}
+                        className="btn btn-secondary btn-sm"
+                        title="View Details"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+
+                      <PermissionGate resource="tool" action="test" userRole={user?.role}>
+                        <button
+                          onClick={() => handleTestTool(tool)}
+                          className="btn btn-secondary btn-sm"
+                          title="Test Tool"
+                          disabled={!tool.is_active}
+                        >
+                          <TestTube className="w-4 h-4" />
+                        </button>
+                      </PermissionGate>
+
+                      <PermissionGate resource="tool" action="update" userRole={user?.role}>
+                        <button
+                          onClick={() => handleEditTool(tool)}
+                          className="btn btn-secondary btn-sm"
+                          title="Edit Tool"
+                        >
+                          <Edit className="w-4 h-4" />
+                        </button>
+                      </PermissionGate>
+
+                      <PermissionGate resource="tool" action="create" userRole={user?.role}>
+                        <button
+                          onClick={() => handleDuplicateTool(tool)}
+                          className="btn btn-secondary btn-sm"
+                          title="Duplicate Tool"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </button>
+                      </PermissionGate>
+
+                      <PermissionGate resource="tool" action="update" userRole={user?.role}>
+                        <button
+                          onClick={() => handleToggleStatus(tool.id, tool.is_active)}
+                          className={`btn btn-sm ${tool.is_active ? 'btn-warning' : 'btn-success'}`}
+                          title={tool.is_active ? 'Deactivate' : 'Activate'}
+                        >
+                          {tool.is_active ? <XCircle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
+                        </button>
+                      </PermissionGate>
+
+                      <PermissionGate resource="tool" action="delete" userRole={user?.role}>
+                        <button
+                          onClick={() => handleDeleteTool(tool.id)}
+                          className="btn btn-danger btn-sm"
+                          title="Delete Tool"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </PermissionGate>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {pagination && pagination.pages > 1 && (
+              <div className="pagination">
+                <button
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage === 1}
+                  className="pagination-btn"
+                >
+                  Previous
+                </button>
+                
+                <div className="pagination-info">
+                  Page {currentPage} of {pagination.pages}
+                </div>
+                
+                <button
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage === pagination.pages}
+                  className="pagination-btn"
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Create/Edit Modal */}
+      <ToolModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        tool={selectedTool}
+        onSuccess={onModalSuccess}
+        user={user}
+      />
+
+      {/* Details Modal */}
+      {showDetailsModal && selectedTool && (
+        <div className="modal-backdrop" onClick={() => setShowDetailsModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Tool Details</h2>
+              <button onClick={() => setShowDetailsModal(false)}>
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="details-section">
+                <h3>Basic Information</h3>
+                <div className="details-grid">
+                  <div className="detail-item">
+                    <label>Name</label>
+                    <span>{selectedTool.name}</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Type</label>
+                    <span>{selectedTool.tool_type}</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Status</label>
+                    <span>{selectedTool.is_active ? 'Active' : 'Inactive'}</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Health</label>
+                    <span>{selectedTool.health_status || 'Unknown'}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="details-section">
+                <h3>Configuration</h3>
+                <div className="details-grid">
+                  {selectedTool.endpoint_url && (
+                    <div className="detail-item">
+                      <label>Endpoint URL</label>
+                      <span className="code-text">{selectedTool.endpoint_url}</span>
+                    </div>
+                  )}
+                  <div className="detail-item">
+                    <label>Rate Limit</label>
+                    <span>{selectedTool.rate_limit || 'No limit'} calls/hour</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Timeout</label>
+                    <span>{selectedTool.timeout || 30} seconds</span>
+                  </div>
+                  <div className="detail-item">
+                    <label>Authentication</label>
+                    <span>{selectedTool.authentication?.type || 'None'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {selectedTool.function_schema && (
+                <div className="details-section">
+                  <h3>Function Schema</h3>
+                  <pre className="code-block">
+                    {JSON.stringify(selectedTool.function_schema, null, 2)}
+                  </pre>
+                </div>
+              )}
+
+              {selectedTool.description && (
+                <div className="details-section">
+                  <h3>Description</h3>
+                  <p>{selectedTool.description}</p>
+                </div>
+              )}
+
+              {selectedTool.safety_tags && selectedTool.safety_tags.length > 0 && (
+                <div className="details-section">
+                  <h3>Safety Tags</h3>
+                  <div className="tags-list">
+                    {selectedTool.safety_tags.map((tag, index) => (
+                      <span key={index} className="tag safety-tag">{tag}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {selectedTool.tags && selectedTool.tags.length > 0 && (
+                <div className="details-section">
+                  <h3>Tags</h3>
+                  <div className="tags-list">
+                    {selectedTool.tags.map((tag, index) => (
+                      <span key={index} className="tag">{tag}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-        )}
-      </div>
-
-      <div className="tool-card-footer">
-        <div className="tool-meta">
-          <span className="created-by">
-            Created by {tool.created_by_name || 'Unknown'}
-          </span>
-          <span className="created-date">
-            {new Date(tool.created_at).toLocaleDateString()}
-          </span>
         </div>
+      )}
 
-        <div className="tool-actions">
-          <button
-            onClick={() => onViewDetails(tool)}
-            className="action-btn secondary"
-            title="View Details"
-          >
-            <Eye size={16} />
-          </button>
-          
-          <button
-            onClick={() => onTest(tool)}
-            className="action-btn primary"
-            title="Test Tool"
-            disabled={tool.status !== 'active'}
-          >
-            <Play size={16} />
-          </button>
-
-          {canEdit && (
-            <>
-              <button
-                onClick={() => onEdit(tool)}
-                className="action-btn secondary"
-                title="Edit Tool"
-              >
-                <Edit size={16} />
+      {/* Test Modal */}
+      {showTestModal && selectedTool && (
+        <div className="modal-backdrop" onClick={() => setShowTestModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Test Tool: {selectedTool.name}</h2>
+              <button onClick={() => setShowTestModal(false)}>
+                <X className="w-5 h-5" />
               </button>
-              
+            </div>
+            <div className="modal-body">
+              <p>Tool testing interface would go here.</p>
+              <p>This would include parameter input, execution controls, and result display.</p>
+            </div>
+            <div className="modal-footer">
               <button
-                onClick={() => onDuplicate(tool)}
-                className="action-btn secondary"
-                title="Duplicate Tool"
+                onClick={() => setShowTestModal(false)}
+                className="btn btn-secondary"
               >
-                <Copy size={16} />
+                Close
               </button>
-              
-              <button
-                onClick={() => onToggleStatus(tool.id, tool.status === 'active')}
-                className="action-btn secondary"
-                title={tool.status === 'active' ? "Deactivate" : "Activate"}
-              >
-                {tool.status === 'active' ? <Pause size={16} /> : <Play size={16} />}
+              <button className="btn btn-primary">
+                <TestTube className="w-4 h-4" />
+                Run Test
               </button>
-              
-              <button
-                onClick={() => onDelete(tool.id)}
-                className="action-btn danger"
-                title="Delete Tool"
-              >
-                <Trash2 size={16} />
-              </button>
-            </>
-          )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

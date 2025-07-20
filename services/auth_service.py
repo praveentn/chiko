@@ -5,7 +5,7 @@ from functools import wraps
 import re
 from datetime import datetime
 
-from extensions import db                       # ← pull db from the shared extensions module
+from extensions import db
 from models.user import User, Role
 from models.audit import AuditLog
 
@@ -15,7 +15,7 @@ def require_role(required_role):
         @wraps(f)
         def decorated_function(*args, **kwargs):
             verify_jwt_in_request()
-            user_id = get_jwt_identity()
+            user_id = int(get_jwt_identity())  # Convert back to int
             user = User.query.get(user_id)
             
             if not user:
@@ -38,7 +38,7 @@ def require_permission(permission_name):
         @wraps(f)
         def decorated_function(*args, **kwargs):
             verify_jwt_in_request()
-            user_id = get_jwt_identity()
+            user_id = int(get_jwt_identity())  # Convert back to int
             user = User.query.get(user_id)
             
             if not user or not user.has_permission(permission_name):
@@ -52,7 +52,7 @@ def get_current_user():
     """Get current authenticated user"""
     try:
         verify_jwt_in_request()
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())  # Convert back to int
         return User.query.get(user_id)
     except:
         return None
@@ -76,35 +76,31 @@ def log_activity(user_id, action, details=None, resource_type=None, resource_id=
         db.session.commit()
         
     except Exception as e:
-        # Don't let audit logging failure break the main operation
-        print(f"Audit logging failed: {str(e)}")
         db.session.rollback()
+        print(f"Failed to log activity: {e}")
 
 def validate_password_strength(password):
     """Validate password strength requirements"""
-    if not password:
-        return {'valid': False, 'message': 'Password is required'}
-    
     if len(password) < 8:
         return {'valid': False, 'message': 'Password must be at least 8 characters long'}
     
     if len(password) > 128:
-        return {'valid': False, 'message': 'Password is too long (max 128 characters)'}
+        return {'valid': False, 'message': 'Password must be less than 128 characters'}
     
-    # Check for at least one uppercase letter
+    # Check for uppercase letter
     if not re.search(r'[A-Z]', password):
         return {'valid': False, 'message': 'Password must contain at least one uppercase letter'}
     
-    # Check for at least one lowercase letter
+    # Check for lowercase letter  
     if not re.search(r'[a-z]', password):
         return {'valid': False, 'message': 'Password must contain at least one lowercase letter'}
     
-    # Check for at least one digit
+    # Check for digit
     if not re.search(r'\d', password):
         return {'valid': False, 'message': 'Password must contain at least one number'}
     
-    # Check for at least one special character
-    if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+    # Check for special character
+    if not re.search(r'[!@#$%^&*()_+\-=\[\]{};\':"\\|,.<>/?~`]', password):
         return {'valid': False, 'message': 'Password must contain at least one special character'}
     
     # Check for common weak passwords
@@ -124,7 +120,7 @@ def check_user_permissions(user, action, resource_type=None):
         return False
     
     # Admin users have all permissions
-    if user.has_role('Admin'):
+    if user.role and user.role.name == 'Admin':
         return True
     
     # Map actions to permission patterns
@@ -138,7 +134,7 @@ def check_user_permissions(user, action, resource_type=None):
     }
     
     permission_name = permission_map.get(action)
-    if permission_name:
+    if permission_name and hasattr(user, 'has_permission'):
         return user.has_permission(permission_name)
     
     return False
@@ -149,7 +145,7 @@ def can_access_resource(user, resource_obj, action='read'):
         return False
     
     # Admin users can access everything
-    if user.has_role('Admin'):
+    if user.role and user.role.name == 'Admin':
         return True
     
     # Check if user owns the resource
@@ -174,170 +170,135 @@ def can_access_resource(user, resource_obj, action='read'):
 
 def get_user_accessible_resources(user, model_class, query=None):
     """Get resources that user can access"""
+    from sqlalchemy import or_
+    
     if query is None:
         query = model_class.query
     
     # Admin users can see everything
-    if user.has_role('Admin'):
+    if user.role and user.role.name == 'Admin':
         return query
     
-    # Business users can only see approved resources and their own
-    if user.has_role('Business User'):
-        if hasattr(model_class, 'is_approved') and hasattr(model_class, 'created_by'):
-            query = query.filter(
-                (model_class.is_approved == True) | 
-                (model_class.created_by == user.id)
-            )
-        elif hasattr(model_class, 'is_approved'):
-            query = query.filter(model_class.is_approved == True)
+    # Regular users can see approved resources or their own resources
+    access_conditions = []
     
-    # Developers can see their own and approved resources
-    elif user.has_role('Developer'):
-        if hasattr(model_class, 'created_by'):
-            query = query.filter(
-                (model_class.created_by == user.id) |
-                (model_class.is_approved == True)
-            )
+    # Can see approved/public resources
+    if hasattr(model_class, 'is_approved'):
+        access_conditions.append(model_class.is_approved == True)
+    
+    # Can see own resources
+    if hasattr(model_class, 'created_by'):
+        access_conditions.append(model_class.created_by == user.id)
+    
+    # Can see public visibility resources
+    if hasattr(model_class, 'visibility'):
+        access_conditions.append(model_class.visibility == 'public')
+    
+    if access_conditions:
+        return query.filter(or_(*access_conditions))
     
     return query
 
-def create_default_permissions():
-    """Create default permissions if they don't exist"""
-    from models.user import Permission
+def detect_device_type(user_agent):
+    """Detect device type from user agent"""
+    if not user_agent:
+        return 'unknown'
     
-    default_permissions = [
+    user_agent = user_agent.lower()
+    
+    if 'mobile' in user_agent or 'android' in user_agent or 'iphone' in user_agent:
+        return 'mobile'
+    elif 'tablet' in user_agent or 'ipad' in user_agent:
+        return 'tablet'
+    else:
+        return 'desktop'
+
+def create_default_permissions():
+    """Create default system permissions"""
+    permissions_data = [
         # Model permissions
-        ('model_create', 'Create models', 'model', 'create'),
-        ('model_read', 'Read models', 'model', 'read'),
-        ('model_update', 'Update models', 'model', 'update'),
-        ('model_delete', 'Delete models', 'model', 'delete'),
-        ('model_approve', 'Approve models', 'model', 'approve'),
+        {'name': 'model_create', 'description': 'Create new models', 'resource': 'model', 'action': 'create'},
+        {'name': 'model_read', 'description': 'View models', 'resource': 'model', 'action': 'read'},
+        {'name': 'model_update', 'description': 'Update models', 'resource': 'model', 'action': 'update'},
+        {'name': 'model_delete', 'description': 'Delete models', 'resource': 'model', 'action': 'delete'},
+        {'name': 'model_approve', 'description': 'Approve models', 'resource': 'model', 'action': 'approve'},
         
         # Persona permissions
-        ('persona_create', 'Create personas', 'persona', 'create'),
-        ('persona_read', 'Read personas', 'persona', 'read'),
-        ('persona_update', 'Update personas', 'persona', 'update'),
-        ('persona_delete', 'Delete personas', 'persona', 'delete'),
-        ('persona_approve', 'Approve personas', 'persona', 'approve'),
+        {'name': 'persona_create', 'description': 'Create new personas', 'resource': 'persona', 'action': 'create'},
+        {'name': 'persona_read', 'description': 'View personas', 'resource': 'persona', 'action': 'read'},
+        {'name': 'persona_update', 'description': 'Update personas', 'resource': 'persona', 'action': 'update'},
+        {'name': 'persona_delete', 'description': 'Delete personas', 'resource': 'persona', 'action': 'delete'},
+        {'name': 'persona_approve', 'description': 'Approve personas', 'resource': 'persona', 'action': 'approve'},
         
         # Agent permissions
-        ('agent_create', 'Create agents', 'agent', 'create'),
-        ('agent_read', 'Read agents', 'agent', 'read'),
-        ('agent_update', 'Update agents', 'agent', 'update'),
-        ('agent_delete', 'Delete agents', 'agent', 'delete'),
-        ('agent_execute', 'Execute agents', 'agent', 'execute'),
-        ('agent_approve', 'Approve agents', 'agent', 'approve'),
+        {'name': 'agent_create', 'description': 'Create new agents', 'resource': 'agent', 'action': 'create'},
+        {'name': 'agent_read', 'description': 'View agents', 'resource': 'agent', 'action': 'read'},
+        {'name': 'agent_update', 'description': 'Update agents', 'resource': 'agent', 'action': 'update'},
+        {'name': 'agent_delete', 'description': 'Delete agents', 'resource': 'agent', 'action': 'delete'},
+        {'name': 'agent_execute', 'description': 'Execute agents', 'resource': 'agent', 'action': 'execute'},
+        {'name': 'agent_approve', 'description': 'Approve agents', 'resource': 'agent', 'action': 'approve'},
         
         # Workflow permissions
-        ('workflow_create', 'Create workflows', 'workflow', 'create'),
-        ('workflow_read', 'Read workflows', 'workflow', 'read'),
-        ('workflow_update', 'Update workflows', 'workflow', 'update'),
-        ('workflow_delete', 'Delete workflows', 'workflow', 'delete'),
-        ('workflow_execute', 'Execute workflows', 'workflow', 'execute'),
-        ('workflow_approve', 'Approve workflows', 'workflow', 'approve'),
+        {'name': 'workflow_create', 'description': 'Create new workflows', 'resource': 'workflow', 'action': 'create'},
+        {'name': 'workflow_read', 'description': 'View workflows', 'resource': 'workflow', 'action': 'read'},
+        {'name': 'workflow_update', 'description': 'Update workflows', 'resource': 'workflow', 'action': 'update'},
+        {'name': 'workflow_delete', 'description': 'Delete workflows', 'resource': 'workflow', 'action': 'delete'},
+        {'name': 'workflow_execute', 'description': 'Execute workflows', 'resource': 'workflow', 'action': 'execute'},
+        {'name': 'workflow_approve', 'description': 'Approve workflows', 'resource': 'workflow', 'action': 'approve'},
         
         # Tool permissions
-        ('tool_create', 'Create tools', 'tool', 'create'),
-        ('tool_read', 'Read tools', 'tool', 'read'),
-        ('tool_update', 'Update tools', 'tool', 'update'),
-        ('tool_delete', 'Delete tools', 'tool', 'delete'),
-        ('tool_approve', 'Approve tools', 'tool', 'approve'),
+        {'name': 'tool_create', 'description': 'Create new tools', 'resource': 'tool', 'action': 'create'},
+        {'name': 'tool_read', 'description': 'View tools', 'resource': 'tool', 'action': 'read'},
+        {'name': 'tool_update', 'description': 'Update tools', 'resource': 'tool', 'action': 'update'},
+        {'name': 'tool_delete', 'description': 'Delete tools', 'resource': 'tool', 'action': 'delete'},
+        {'name': 'tool_approve', 'description': 'Approve tools', 'resource': 'tool', 'action': 'approve'},
         
         # Admin permissions
-        ('user_management', 'Manage users', 'user', 'manage'),
-        ('system_administration', 'System administration', 'system', 'admin'),
-        ('sql_execution', 'Execute SQL queries', 'database', 'execute'),
-        ('audit_access', 'Access audit logs', 'audit', 'read'),
+        {'name': 'admin_access', 'description': 'Access admin panel', 'resource': 'admin', 'action': 'access'},
+        {'name': 'user_management', 'description': 'Manage users', 'resource': 'user', 'action': 'manage'},
+        {'name': 'system_settings', 'description': 'Manage system settings', 'resource': 'system', 'action': 'settings'},
     ]
     
-    created_permissions = []
-    for name, description, resource, action in default_permissions:
-        if not Permission.query.filter_by(name=name).first():
+    for perm_data in permissions_data:
+        permission = Permission.query.filter_by(name=perm_data['name']).first()
+        if not permission:
             permission = Permission(
-                name=name,
-                description=description,
-                resource=resource,
-                action=action
+                name=perm_data['name'],
+                description=perm_data['description'],
+                resource=perm_data['resource'],
+                action=perm_data['action']
             )
             db.session.add(permission)
-            created_permissions.append(permission)
     
-    try:
-        db.session.commit()
-        return created_permissions
-    except Exception as e:
-        db.session.rollback()
-        raise e
+    db.session.commit()
 
 def assign_role_permissions():
-    """Assign default permissions to roles"""
-    from models.user import Role, Permission
+    """Assign permissions to default roles"""
+    from models.user import Permission
     
     # Get roles
     admin_role = Role.query.filter_by(name='Admin').first()
     developer_role = Role.query.filter_by(name='Developer').first()
     business_role = Role.query.filter_by(name='Business User').first()
     
-    if not all([admin_role, developer_role, business_role]):
-        return False
-    
-    # Admin gets all permissions
+    # Get permissions
     all_permissions = Permission.query.all()
-    admin_role.permissions = all_permissions
     
-    # Developer permissions
-    developer_permissions = Permission.query.filter(
-        Permission.name.in_([
-            'model_create', 'model_read', 'model_update', 'model_delete',
-            'persona_create', 'persona_read', 'persona_update', 'persona_delete',
-            'agent_create', 'agent_read', 'agent_update', 'agent_delete', 'agent_execute',
-            'workflow_create', 'workflow_read', 'workflow_update', 'workflow_delete', 'workflow_execute',
-            'tool_create', 'tool_read', 'tool_update', 'tool_delete'
-        ])
-    ).all()
-    developer_role.permissions = developer_permissions
+    if admin_role:
+        # Admin gets all permissions
+        admin_role.permissions = all_permissions
     
-    # Business User permissions
-    business_permissions = Permission.query.filter(
-        Permission.name.in_([
-            'model_read', 'persona_read', 'agent_read', 'agent_execute',
-            'workflow_read', 'workflow_execute', 'tool_read'
-        ])
-    ).all()
-    business_role.permissions = business_permissions
+    if developer_role:
+        # Developer gets most permissions except user management
+        dev_permissions = [p for p in all_permissions if not p.name.startswith('user_management')]
+        developer_role.permissions = dev_permissions
     
-    try:
-        db.session.commit()
-        return True
-    except Exception as e:
-        db.session.rollback()
-        return False
-
-def rate_limit_check(user_id, action, limit_per_hour=100):
-    """Simple rate limiting check"""
-    from datetime import datetime, timedelta
+    if business_role:
+        # Business User gets read and execute permissions
+        business_permissions = [
+            p for p in all_permissions 
+            if p.action in ['read', 'execute', 'create'] and p.resource in ['agent', 'workflow', 'persona']
+        ]
+        business_role.permissions = business_permissions
     
-    # Count actions in the last hour
-    one_hour_ago = datetime.utcnow() - timedelta(hours=1)
-    recent_actions = AuditLog.query.filter(
-        AuditLog.user_id == user_id,
-        AuditLog.action == action,
-        AuditLog.created_at >= one_hour_ago
-    ).count()
-    
-    return recent_actions < limit_per_hour
-
-def sanitize_user_input(input_string, max_length=1000):
-    """Basic input sanitization"""
-    if not input_string:
-        return ""
-    
-    # Remove potential XSS characters
-    dangerous_chars = ['<', '>', '"', "'", '&', 'javascript:', 'data:', 'vbscript:']
-    sanitized = str(input_string)
-    
-    for char in dangerous_chars:
-        sanitized = sanitized.replace(char, '')
-    
-    # Truncate to max length
-    return sanitized[:max_length]
+    db.session.commit()

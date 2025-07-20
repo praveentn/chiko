@@ -4,9 +4,11 @@ from flask_jwt_extended import create_access_token, verify_jwt_in_request, get_j
 from werkzeug.security import check_password_hash, generate_password_hash
 from datetime import datetime, timedelta
 import re
+import uuid
+import hashlib
 from functools import wraps
 
-from extensions import db                       # ← pull db from the shared extensions module
+from extensions import db
 from models.user import User, Role, UserSession
 from models.audit import AuditLog
 from services.auth_service import log_activity, validate_password_strength
@@ -18,6 +20,45 @@ def validate_email(email):
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
+def detect_device_type(user_agent):
+    """Detect device type from user agent"""
+    if not user_agent:
+        return 'unknown'
+    
+    user_agent = user_agent.lower()
+    
+    if 'mobile' in user_agent or 'android' in user_agent or 'iphone' in user_agent:
+        return 'mobile'
+    elif 'tablet' in user_agent or 'ipad' in user_agent:
+        return 'tablet'
+    else:
+        return 'desktop'
+
+def generate_unique_session_token(user_id, access_token):
+    """Generate a unique session token to avoid UNIQUE constraint failures"""
+    # Create a unique identifier using user_id, timestamp, and partial token
+    timestamp = datetime.utcnow().timestamp()
+    unique_string = f"{user_id}_{timestamp}_{access_token[:20]}"
+    
+    # Hash it to create a consistent length token
+    session_token = hashlib.sha256(unique_string.encode()).hexdigest()[:50]
+    
+    return session_token
+
+def admin_required(f):
+    """Decorator to require admin role"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        verify_jwt_in_request()
+        user_id = get_jwt_identity()
+        user = User.query.get(user_id)
+        
+        if not user or user.role.name != 'Admin':
+            return jsonify({'error': 'Admin access required'}), 403
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
 @auth_bp.route('/register', methods=['POST'])
 def register():
     """User registration endpoint"""
@@ -25,15 +66,15 @@ def register():
         data = request.get_json()
         
         # Validate required fields
-        required_fields = ['email', 'first_name', 'last_name', 'password']
+        required_fields = ['email', 'password', 'first_name', 'last_name']
         for field in required_fields:
             if not data.get(field):
-                return jsonify({'error': f'{field} is required'}), 400
+                return jsonify({'error': f'{field.replace("_", " ").title()} is required'}), 400
         
         email = data['email'].lower().strip()
+        password = data['password']
         first_name = data['first_name'].strip()
         last_name = data['last_name'].strip()
-        password = data['password']
         
         # Validate email format
         if not validate_email(email):
@@ -47,15 +88,12 @@ def register():
         # Check if user already exists
         existing_user = User.query.filter_by(email=email).first()
         if existing_user:
-            return jsonify({'error': 'User with this email already exists'}), 400
+            return jsonify({'error': 'User already exists with this email'}), 409
         
         # Get default role (Business User)
         default_role = Role.query.filter_by(name='Business User').first()
         if not default_role:
-            # Create default role if it doesn't exist
-            default_role = Role(name='Business User', description='Default business user role')
-            db.session.add(default_role)
-            db.session.flush()
+            return jsonify({'error': 'Default role not found'}), 500
         
         # Create new user
         user = User(
@@ -65,21 +103,21 @@ def register():
             password_hash=generate_password_hash(password),
             role_id=default_role.id,
             is_active=True,
-            is_approved=False  # Requires admin approval
+            is_approved=False,  # Requires admin approval
+            is_email_verified=False
         )
         
         db.session.add(user)
         db.session.commit()
         
         # Log registration
-        log_activity(None, 'user_registered', {
-            'user_id': user.id,
-            'user_email': user.email,
+        log_activity(user.id, 'user_registered', {
+            'email': email,
             'ip_address': request.remote_addr
         })
         
         return jsonify({
-            'message': 'Registration successful. Please wait for admin approval.',
+            'message': 'Registration successful! Please wait for admin approval.',
             'user_id': user.id
         }), 201
         
@@ -129,17 +167,25 @@ def login():
         
         # Create access token
         access_token = create_access_token(
-            identity=user.id,
+            identity=str(user.id),  # Convert to string for JWT
             expires_delta=timedelta(hours=24)
         )
         
         # Update last login
         user.last_login = datetime.utcnow()
         
+        # Deactivate any existing sessions for this user (optional: comment out if you want multiple sessions)
+        UserSession.query.filter_by(user_id=user.id, is_active=True).update({
+            'is_active': False
+        })
+        
+        # Create unique session token
+        session_token = generate_unique_session_token(user.id, access_token)
+        
         # Create user session
         session = UserSession(
             user_id=user.id,
-            session_token=access_token[:50],  # Store partial token for reference
+            session_token=session_token,
             expires_at=datetime.utcnow() + timedelta(hours=24),
             ip_address=request.remote_addr,
             user_agent=request.headers.get('User-Agent', '')[:500],
@@ -170,7 +216,7 @@ def logout():
     """User logout endpoint"""
     try:
         verify_jwt_in_request()
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())  # Convert back to int
         
         # Deactivate user sessions
         UserSession.query.filter_by(user_id=user_id, is_active=True).update({
@@ -190,12 +236,12 @@ def logout():
         current_app.logger.error(f"Logout error: {str(e)}")
         return jsonify({'error': 'Logout failed'}), 500
 
-@auth_bp.route('/me', methods=['GET'])
-def get_current_user():
-    """Get current user information"""
+@auth_bp.route('/profile', methods=['GET'])
+def get_profile():
+    """Get current user profile"""
     try:
         verify_jwt_in_request()
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())  # Convert back to int
         
         user = User.query.get(user_id)
         if not user:
@@ -204,62 +250,79 @@ def get_current_user():
         return jsonify({'user': user.to_dict()})
         
     except Exception as e:
-        current_app.logger.error(f"Get current user error: {str(e)}")
-        return jsonify({'error': 'Failed to get user information'}), 500
+        current_app.logger.error(f"Get profile error: {str(e)}")
+        return jsonify({'error': 'Failed to get profile'}), 500
 
-@auth_bp.route('/refresh', methods=['POST'])
-def refresh_token():
-    """Refresh access token"""
+@auth_bp.route('/profile', methods=['PUT'])
+def update_profile():
+    """Update user profile"""
     try:
         verify_jwt_in_request()
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())  # Convert back to int
         
         user = User.query.get(user_id)
-        if not user or not user.is_active or not user.is_approved:
-            return jsonify({'error': 'Invalid user'}), 401
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
         
-        # Create new access token
-        new_token = create_access_token(
-            identity=user_id,
-            expires_delta=timedelta(hours=24)
-        )
+        data = request.get_json()
         
-        return jsonify({'access_token': new_token})
+        # Update allowed fields
+        if 'first_name' in data:
+            user.first_name = data['first_name'].strip()
+        if 'last_name' in data:
+            user.last_name = data['last_name'].strip()
+        
+        user.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        # Log profile update
+        log_activity(user_id, 'profile_updated', {
+            'ip_address': request.remote_addr
+        })
+        
+        return jsonify({'user': user.to_dict()})
         
     except Exception as e:
-        current_app.logger.error(f"Token refresh error: {str(e)}")
-        return jsonify({'error': 'Token refresh failed'}), 500
+        db.session.rollback()
+        current_app.logger.error(f"Update profile error: {str(e)}")
+        return jsonify({'error': 'Failed to update profile'}), 500
 
 @auth_bp.route('/change-password', methods=['POST'])
 def change_password():
     """Change user password"""
     try:
         verify_jwt_in_request()
-        user_id = get_jwt_identity()
-        
-        data = request.get_json()
-        if not data.get('old_password') or not data.get('new_password'):
-            return jsonify({'error': 'Old and new passwords are required'}), 400
+        user_id = int(get_jwt_identity())  # Convert back to int
         
         user = User.query.get(user_id)
         if not user:
             return jsonify({'error': 'User not found'}), 404
         
-        # Verify old password
-        if not check_password_hash(user.password_hash, data['old_password']):
-            log_activity(user_id, 'password_change_failed', {
-                'reason': 'invalid_old_password',
-                'ip_address': request.remote_addr
-            })
-            return jsonify({'error': 'Invalid old password'}), 400
+        data = request.get_json()
+        current_password = data.get('current_password')
+        new_password = data.get('new_password')
+        
+        if not current_password or not new_password:
+            return jsonify({'error': 'Both current and new passwords are required'}), 400
+        
+        # Verify current password
+        if not check_password_hash(user.password_hash, current_password):
+            return jsonify({'error': 'Current password is incorrect'}), 401
         
         # Validate new password strength
-        password_validation = validate_password_strength(data['new_password'])
+        password_validation = validate_password_strength(new_password)
         if not password_validation['valid']:
             return jsonify({'error': password_validation['message']}), 400
         
         # Update password
-        user.password_hash = generate_password_hash(data['new_password'])
+        user.password_hash = generate_password_hash(new_password)
+        user.updated_at = datetime.utcnow()
+        
+        # Deactivate all other sessions
+        UserSession.query.filter_by(user_id=user_id, is_active=True).update({
+            'is_active': False
+        })
+        
         db.session.commit()
         
         # Log password change
@@ -271,58 +334,15 @@ def change_password():
         
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Password change error: {str(e)}")
-        return jsonify({'error': 'Password change failed'}), 500
-
-@auth_bp.route('/forgot-password', methods=['POST'])
-def forgot_password():
-    """Request password reset"""
-    try:
-        data = request.get_json()
-        if not data.get('email'):
-            return jsonify({'error': 'Email is required'}), 400
-        
-        email = data['email'].lower().strip()
-        user = User.query.filter_by(email=email).first()
-        
-        # Always return success to prevent email enumeration
-        message = 'If the email exists, a password reset link has been sent.'
-        
-        if user:
-            # TODO: Implement password reset token generation and email sending
-            # For now, just log the request
-            log_activity(user.id, 'password_reset_requested', {
-                'ip_address': request.remote_addr
-            })
-        
-        return jsonify({'message': message})
-        
-    except Exception as e:
-        current_app.logger.error(f"Forgot password error: {str(e)}")
-        return jsonify({'error': 'Request failed'}), 500
-
-@auth_bp.route('/reset-password', methods=['POST'])
-def reset_password():
-    """Reset password with token"""
-    try:
-        data = request.get_json()
-        if not data.get('token') or not data.get('new_password'):
-            return jsonify({'error': 'Token and new password are required'}), 400
-        
-        # TODO: Implement token validation
-        # For now, return not implemented
-        return jsonify({'error': 'Password reset not implemented yet'}), 501
-        
-    except Exception as e:
-        current_app.logger.error(f"Password reset error: {str(e)}")
-        return jsonify({'error': 'Password reset failed'}), 500
+        current_app.logger.error(f"Change password error: {str(e)}")
+        return jsonify({'error': 'Failed to change password'}), 500
 
 @auth_bp.route('/sessions', methods=['GET'])
 def get_user_sessions():
     """Get user's active sessions"""
     try:
         verify_jwt_in_request()
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())  # Convert back to int
         
         sessions = UserSession.query.filter_by(
             user_id=user_id, 
@@ -342,7 +362,7 @@ def revoke_session(session_id):
     """Revoke a specific session"""
     try:
         verify_jwt_in_request()
-        user_id = get_jwt_identity()
+        user_id = int(get_jwt_identity())  # Convert back to int
         
         session = UserSession.query.filter_by(
             id=session_id, 
@@ -367,13 +387,22 @@ def revoke_session(session_id):
         current_app.logger.error(f"Session revocation error: {str(e)}")
         return jsonify({'error': 'Failed to revoke session'}), 500
 
-def detect_device_type(user_agent):
-    """Detect device type from user agent"""
-    user_agent = user_agent.lower()
-    
-    if 'mobile' in user_agent or 'android' in user_agent or 'iphone' in user_agent:
-        return 'mobile'
-    elif 'tablet' in user_agent or 'ipad' in user_agent:
-        return 'tablet'
-    else:
-        return 'desktop'
+@auth_bp.route('/verify', methods=['GET'])
+def verify_token():
+    """Verify JWT token and return user info"""
+    try:
+        verify_jwt_in_request()
+        user_id = int(get_jwt_identity())  # Convert back to int
+        
+        user = User.query.get(user_id)
+        if not user or not user.is_active:
+            return jsonify({'error': 'Invalid or inactive user'}), 401
+        
+        return jsonify({
+            'valid': True,
+            'user': user.to_dict()
+        })
+        
+    except Exception as e:
+        current_app.logger.error(f"Token verification error: {str(e)}")
+        return jsonify({'valid': False, 'error': 'Invalid token'}), 401
